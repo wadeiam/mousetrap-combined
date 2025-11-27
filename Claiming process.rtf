@@ -1,0 +1,171 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2761
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 Menlo-Bold;\f1\fnil\fcharset0 Menlo-Regular;\f2\fnil\fcharset0 Menlo-Italic;
+}
+{\colortbl;\red255\green255\blue255;\red116\green116\blue116;\red0\green0\blue0;\red175\green221\blue255;
+\red57\green192\blue38;\red86\green32\blue244;\red56\green185\blue199;\red202\green51\blue35;}
+{\*\expandedcolortbl;;\csgenericrgb\c45371\c45371\c45371;\csgray\c0;\cssrgb\c73675\c89410\c100000;
+\cssrgb\c25706\c77963\c19557;\cssrgb\c41681\c25958\c96648;\cssrgb\c25546\c77007\c82023;\cssrgb\c83899\c28663\c18026;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\b\fs22 \cf2 \CocoaLigature0 Production (Server in Cloud)
+\f1\b0 \cf3 \
+\
+  The flow changes completely:\
+\
+  \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+  \uc0\u9474                     PRODUCTION FLOW                          \u9474 \
+  \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+\
+  1. USER'S HOME NETWORK:\
+     \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+     \uc0\u9474    Device     \u9474 \u9472 \u9472 \u9472 \u9472 \u9472 (1. Button pressed)\u9472 \u9472 \u9472 \u9472 \u9654  Claiming Mode\
+     \uc0\u9474   (ESP32-S3)  \u9474                               - Starts mDNS\
+     \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9516 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496                               - Notifies server
+\f2\i *
+\f1\i0 \
+  
+\f2\i           \uc0\u9474 
+\f1\i0 \
+  
+\f2\i           \uc0\u9474  (Same WiFi)
+\f1\i0 \
+  
+\f2\i           \uc0\u9474 
+\f1\i0 \
+  
+\f2\i    \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9660 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 
+\f1\i0 \
+  
+\f2\i    \uc0\u9474  User Browser \u9474 \u9472 \u9472 \u9472 \u9472 \u9472 (2. Discovers device)\u9472 \u9472 \u9472 \u9654  Via Web Bluetooth
+\f1\i0 \
+  
+\f2\i    \uc0\u9474  (Phone/PC)   \u9474       Gets MAC address           or mDNS (local)
+\f1\i0 \
+  
+\f2\i    \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9516 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 
+\f1\i0 \
+  
+\f2\i           \uc0\u9474 
+\f1\i0 \
+  
+\f2\i           \uc0\u9474  (Internet)
+\f1\i0 \
+  
+\f2\i           \uc0\u9660 
+\f1\i0 \
+  
+\f2\i 2. CLOUD:
+\f1\i0 \
+  
+\f2\i    \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 
+\f1\i0 \
+  
+\f2\i    \uc0\u9474     Server    \u9474 \u9664 \u9472 \u9472 \u9472 \u9472 (3. Browser submits)\u9472 \u9472 \u9472 \u9472 \u9654  Claim with MAC
+\f1\i0 \
+  
+\f2\i    \uc0\u9474   (Heroku/    \u9474       /api/devices/claim          + Claim Code
+\f1\i0 \
+  
+\f2\i    \uc0\u9474    AWS/etc)   \u9474 
+\f1\i0 \
+  
+\f2\i    \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 
+\f1\i0 \
+\
+  
+\f2\i *
+\f1\i0  Device notifies server via HTTP POST (outbound through firewall)\
+\
+  
+\f0\b \cf2 Updated Web Portal Flow
+\f1\b0 \cf3 \
+\
+  I've updated \cf4 Setup.tsx\cf3  to:\
+  1. 
+\f0\b Browser discovers device
+\f1\b0  locally (Web Bluetooth or mDNS if server is local)\
+  2. 
+\f0\b Browser gets MAC address
+\f1\b0  from discovered device\
+  3. 
+\f0\b Browser submits claim
+\f1\b0  to cloud server WITH device info\
+  4. 
+\f0\b Server validates
+\f1\b0  claim code and claiming window\
+  5. 
+\f0\b Server creates
+\f1\b0  device credentials\
+  6. 
+\f0\b Device polls
+\f1\b0  server to get credentials (or browser could notify device locally)\
+\
+  
+\f0\b Key Changes Made:
+\f1\b0 \
+  - Setup.tsx now calls \cf4 /api/devices/claim\cf3  with the MAC address (lines 247-271)\
+  - Added note that mDNS discovery only works with local server\
+  - Browser acts as the "bridge" between local device and cloud server\
+\
+  
+\f0\b Issue 2: Button Held When Device Already Claimed
+\f1\b0 \
+\
+  
+\f0\b Fixed!
+\f1\b0  I added a check in \cf4 enterClaimingMode()\cf3 :\
+\
+  \cf5 // Check if device is already claimed\cf3 \
+  \cf6 if\cf3  (deviceClaimed) \{\
+    Serial.\cf7 println\cf3 (\cf8 "[CLAIMING] DEVICE ALREADY CLAIMED - CANNOT ENTER CLAIMING MODE"\cf3 );\
+\
+    \cf5 // Error feedback - rapid low beeps (200Hz)\cf3 \
+    \cf6 for\cf3  (\cf6 int\cf3  i = \cf5 0\cf3 ; i < \cf5 3\cf3 ; i++) \{\
+      \cf7 tone\cf3 (BUZZER_PIN, \cf5 200\cf3 );\
+      \cf7 TASK_YIELD_MS\cf3 (\cf5 100\cf3 );\
+      \cf7 noTone\cf3 (BUZZER_PIN);\
+      \cf7 TASK_YIELD_MS\cf3 (\cf5 100\cf3 );\
+    \}\
+\
+    \cf7 addSystemLog\cf3 (\cf8 "[CLAIMING] Attempted to enter claiming mode while already claimed - rejected"\cf3 );\
+    \cf6 return\cf3 ;\
+  \}\
+\
+  
+\f0\b User Experience:
+\f1\b0 \
+  - 
+\f0\b If claimed
+\f1\b0 : 3 rapid low-pitched error beeps (200Hz)\
+  - 
+\f0\b If unclaimed
+\f1\b0 : 5 LED blinks + ascending tone sequence (400\uc0\u8594 600\u8594 800Hz)\
+  - Clear audio differentiation so user knows what happened\
+\
+  
+\f0\b Summary of Architecture
+\f1\b0 \
+\
+  
+\f0\b For Local Server (Development):
+\f1\b0 \
+  - mDNS discovery works end-to-end\
+  - Browser \uc0\u8594  Server mDNS \u8594  Device\
+\
+  
+\f0\b For Cloud Server (Production):
+\f1\b0 \
+  - Web Bluetooth required for mobile\
+  - OR user manually finds device IP (check router)\
+  - Browser discovers locally, submits to cloud\
+\
+  
+\f0\b Both scenarios:
+\f1\b0 \
+  - Device is protected by claiming window (10 min timeout)\
+  - Already-claimed devices reject claiming mode with error beeps\
+  - Browser completes the claim transaction with the server\
+\
+  All code is updated and services are running!\
+}

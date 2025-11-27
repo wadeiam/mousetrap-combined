@@ -1,0 +1,261 @@
+================================================================================
+                    TENANT CREATION FLOW - VISUAL DIAGRAM
+================================================================================
+
+CURRENT FLOW (BROKEN)
+═════════════════════
+
+┌─────────────┐
+│  Dashboard  │
+│   Browser   │
+└──────┬──────┘
+       │
+       │ 1. User clicks "Create Tenant"
+       │    Tenant name: "Acme Corp"
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    POST /api/tenants                        │
+│  Headers:                                                   │
+│    Authorization: Bearer eyJhbGciOi...                      │
+│  Body:                                                      │
+│    { "name": "Acme Corp" }                                  │
+└─────────────────────────────────────────────────────────────┘
+       │
+       │ 2. Server validates
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│   tenants.routes.ts - POST handler      │
+│                                          │
+│   ✓ Verify token is valid               │
+│   ✓ Extract userId from JWT             │
+│   ✓ Check user is superadmin            │
+│   ✓ Validate tenant name                │
+└──────────────────┬───────────────────────┘
+                   │
+                   │ 3. Create tenant
+                   │
+                   ▼
+        ┌──────────────────────┐
+        │   TENANTS TABLE      │
+        ├──────────────────────┤
+        │ INSERT:              │
+        │   id: uuid           │ ← NEW TENANT CREATED ✓
+        │   name: "Acme Corp"  │
+        │   created_at: now()  │
+        └──────────────────────┘
+                   │
+                   │ 4. Return success
+                   │
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Response: 201 Created                      │
+│  {                                                          │
+│    "success": true,                                         │
+│    "data": {                                                │
+│      "id": "abc-123",                                       │
+│      "name": "Acme Corp"                                    │
+│    }                                                        │
+│  }                                                          │
+└─────────────────────────────────────────────────────────────┘
+       │
+       │ 5. Dashboard receives success
+       │
+       ▼
+┌─────────────┐
+│  Dashboard  │  Shows: "Tenant created successfully!"
+│   Browser   │
+└──────┬──────┘
+       │
+       │ 6. Dashboard refreshes tenant list
+       │    Calls: GET /api/tenants
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│   tenants.routes.ts - GET handler       │
+│                                          │
+│   Query:                                 │
+│   SELECT t.*, utm.role                   │
+│   FROM tenants t                         │
+│   INNER JOIN                             │
+│     user_tenant_memberships utm          │ ← FILTERS BY MEMBERSHIP!
+│   WHERE utm.user_id = $1                 │
+└──────────────┬───────────────────────────┘
+               │
+               │ 7. Look for memberships
+               │
+               ▼
+    ┌────────────────────────────────────────┐
+    │  USER_TENANT_MEMBERSHIPS TABLE         │
+    ├────────────────────────────────────────┤
+    │ user_id │ tenant_id │ role            │
+    ├─────────┼───────────┼─────────────────┤
+    │ admin   │ Master    │ superadmin      │
+    │ admin   │ Acme Corp │ ???             │ ← MISSING! ✗
+    └────────────────────────────────────────┘
+               │
+               │ 8. Returns only Master Tenant
+               │    (Acme Corp not in results!)
+               │
+               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Response: 200 OK                           │
+│  {                                                          │
+│    "success": true,                                         │
+│    "data": [                                                │
+│      { "id": "...", "name": "Master Tenant" }               │
+│      // Acme Corp is MISSING!                               │
+│    ]                                                        │
+│  }                                                          │
+└─────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│  Dashboard  │  NEW TENANT NOT VISIBLE! ✗
+│   Browser   │  User sees only "Master Tenant"
+└─────────────┘
+
+
+WHAT WENT WRONG:
+═══════════════
+Step 3 only created the tenant in the tenants table.
+It FORGOT to add a row to user_tenant_memberships!
+
+Result: The tenant exists in the database but has no members.
+        Nobody can see it or access it!
+
+
+================================================================================
+
+
+CORRECT FLOW (WITH FIX)
+══════════════════════
+
+┌─────────────┐
+│  Dashboard  │
+│   Browser   │
+└──────┬──────┘
+       │
+       │ 1. User clicks "Create Tenant"
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    POST /api/tenants                        │
+└─────────────────────────────────────────────────────────────┘
+       │
+       │ 2. Server validates (same as before)
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│   tenants.routes.ts - POST handler      │
+│                                          │
+│   ✓ Verify token                        │
+│   ✓ Extract userId                      │
+│   ✓ Check superadmin                    │
+│   ✓ Validate name                       │
+└──────────────────┬───────────────────────┘
+                   │
+                   │ 3. Create tenant
+                   │
+                   ▼
+        ┌──────────────────────┐
+        │   TENANTS TABLE      │
+        ├──────────────────────┤
+        │ INSERT:              │
+        │   id: abc-123        │ ← NEW TENANT CREATED ✓
+        │   name: "Acme Corp"  │
+        └──────────────────────┘
+                   │
+                   │ 4. Add creator as admin (NEW STEP!)
+                   │
+                   ▼
+        ┌──────────────────────────────────────┐
+        │  USER_TENANT_MEMBERSHIPS TABLE       │
+        ├──────────────────────────────────────┤
+        │ INSERT:                              │
+        │   user_id: admin-user-id             │ ← CREATOR ADDED ✓
+        │   tenant_id: abc-123                 │
+        │   role: admin                        │
+        └──────────────────────────────────────┘
+                   │
+                   │ 5. Return success
+                   │
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Response: 201 Created                      │
+└─────────────────────────────────────────────────────────────┘
+       │
+       │ 6. Dashboard refreshes tenant list
+       │
+       ▼
+┌──────────────────────────────────────────┐
+│   tenants.routes.ts - GET handler       │
+│                                          │
+│   SELECT t.*, utm.role                   │
+│   FROM tenants t                         │
+│   INNER JOIN                             │
+│     user_tenant_memberships utm          │ ← NOW FINDS THE MEMBERSHIP!
+│   WHERE utm.user_id = $1                 │
+└──────────────┬───────────────────────────┘
+               │
+               │ 7. Finds memberships
+               │
+               ▼
+    ┌────────────────────────────────────────┐
+    │  USER_TENANT_MEMBERSHIPS TABLE         │
+    ├────────────────────────────────────────┤
+    │ user_id │ tenant_id │ role            │
+    ├─────────┼───────────┼─────────────────┤
+    │ admin   │ Master    │ superadmin      │
+    │ admin   │ Acme Corp │ admin           │ ← FOUND! ✓
+    └────────────────────────────────────────┘
+               │
+               │ 8. Returns BOTH tenants
+               │
+               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Response: 200 OK                           │
+│  {                                                          │
+│    "success": true,                                         │
+│    "data": [                                                │
+│      { "id": "...", "name": "Master Tenant" },              │
+│      { "id": "...", "name": "Acme Corp" }  ← VISIBLE! ✓     │
+│    ]                                                        │
+│  }                                                          │
+└─────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌─────────────┐
+│  Dashboard  │  NEW TENANT IS VISIBLE! ✓
+│   Browser   │  User sees both tenants
+└─────────────┘
+
+
+THE FIX:
+═══════
+Add this code after creating the tenant (around line 115):
+
+    const newTenant = result.rows[0];
+
+    // Add the creating user as admin of the new tenant
+    await dbPool.query(
+      `INSERT INTO user_tenant_memberships
+       (user_id, tenant_id, role, created_at)
+       VALUES ($1, $2, 'admin', NOW())`,
+      [userId, newTenant.id]
+    );
+
+
+================================================================================
+
+KEY INSIGHT:
+═══════════
+
+The tenant creation API is working perfectly. It just doesn't complete the
+full business operation. It's like creating a house but forgetting to give
+the owner a key!
+
+Tenant created ✓ → But owner has no access ✗ → Owner can't see it ✗
+
+================================================================================

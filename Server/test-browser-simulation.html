@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tenant Creation Test - Browser Simulation</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1, h2 {
+            color: #4ec9b0;
+        }
+        .test-section {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .success {
+            color: #4ec9b0;
+        }
+        .error {
+            color: #f48771;
+        }
+        .warning {
+            color: #dcdcaa;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #1177bb;
+        }
+        pre {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        input {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            padding: 8px;
+            border-radius: 4px;
+            width: 300px;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+        .badge-success {
+            background: #4ec9b0;
+            color: #1e1e1e;
+        }
+        .badge-error {
+            background: #f48771;
+            color: #1e1e1e;
+        }
+        .badge-pending {
+            background: #dcdcaa;
+            color: #1e1e1e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐭 MouseTrap Tenant Creation Test</h1>
+        <p>Testing from: <strong id="current-origin"></strong></p>
+
+        <div class="test-section">
+            <h2>Step 1: Get Auth Token</h2>
+            <p>Check localStorage or login to get a token</p>
+            <button onclick="checkLocalStorage()">Check localStorage</button>
+            <button onclick="login()">Login</button>
+            <div id="token-status"></div>
+            <pre id="token-info"></pre>
+        </div>
+
+        <div class="test-section">
+            <h2>Step 2: Verify Superadmin</h2>
+            <button onclick="checkSuperadmin()">Check Superadmin Status</button>
+            <div id="superadmin-status"></div>
+            <pre id="superadmin-info"></pre>
+        </div>
+
+        <div class="test-section">
+            <h2>Step 3: Create Tenant</h2>
+            <input type="text" id="tenant-name" placeholder="Enter tenant name" value="Test Tenant from Browser">
+            <button onclick="createTenant()">Create Tenant</button>
+            <div id="create-status"></div>
+            <pre id="create-info"></pre>
+        </div>
+
+        <div class="test-section">
+            <h2>Step 4: List Tenants</h2>
+            <button onclick="listTenants()">List All Tenants</button>
+            <div id="list-status"></div>
+            <pre id="list-info"></pre>
+        </div>
+
+        <div class="test-section">
+            <h2>Browser Console Errors</h2>
+            <p class="warning">Check the browser console (F12) for any JavaScript errors</p>
+            <pre id="console-errors">No errors captured yet</pre>
+        </div>
+
+        <div class="test-section">
+            <h2>Network Activity</h2>
+            <p class="warning">Check the Network tab (F12) to see all requests and responses</p>
+            <button onclick="clearResults()">Clear All Results</button>
+        </div>
+    </div>
+
+    <script>
+        let authToken = null;
+        const API_BASE = 'http://localhost:4000';
+        const DASHBOARD_BASE = 'http://192.168.133.110:4000';
+
+        // Display current origin
+        document.getElementById('current-origin').textContent = window.location.origin;
+
+        // Capture console errors
+        const originalConsoleError = console.error;
+        const errors = [];
+        console.error = function(...args) {
+            errors.push(args.join(' '));
+            document.getElementById('console-errors').textContent = errors.join('\n');
+            originalConsoleError.apply(console, args);
+        };
+
+        function checkLocalStorage() {
+            const token = localStorage.getItem('authToken') || localStorage.getItem('token') ||
+                         localStorage.getItem('access_token') || localStorage.getItem('accessToken');
+
+            const tokenStatus = document.getElementById('token-status');
+            const tokenInfo = document.getElementById('token-info');
+
+            if (token) {
+                authToken = token;
+                tokenStatus.innerHTML = '<span class="status-badge badge-success">✓ Token Found</span>';
+
+                // Decode JWT
+                try {
+                    const parts = token.split('.');
+                    if (parts.length === 3) {
+                        const payload = JSON.parse(atob(parts[1]));
+                        tokenInfo.textContent = JSON.stringify(payload, null, 2);
+                    }
+                } catch (e) {
+                    tokenInfo.textContent = `Token: ${token.substring(0, 50)}...`;
+                }
+            } else {
+                tokenStatus.innerHTML = '<span class="status-badge badge-error">✗ No Token Found</span>';
+                tokenInfo.textContent = 'localStorage keys: ' + Object.keys(localStorage).join(', ');
+            }
+        }
+
+        async function login() {
+            const tokenStatus = document.getElementById('token-status');
+            const tokenInfo = document.getElementById('token-info');
+
+            try {
+                tokenStatus.innerHTML = '<span class="status-badge badge-pending">⏳ Logging in...</span>';
+
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: 'admin@mastertenant.com',
+                        password: 'Admin123!'
+                    })
+                });
+
+                const data = await response.json();
+                tokenInfo.textContent = JSON.stringify(data, null, 2);
+
+                if (data.success && data.data.accessToken) {
+                    authToken = data.data.accessToken;
+                    localStorage.setItem('authToken', authToken);
+                    tokenStatus.innerHTML = '<span class="status-badge badge-success">✓ Login Successful</span>';
+                } else {
+                    tokenStatus.innerHTML = '<span class="status-badge badge-error">✗ Login Failed</span>';
+                }
+            } catch (error) {
+                tokenStatus.innerHTML = '<span class="status-badge badge-error">✗ Login Error</span>';
+                tokenInfo.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        async function checkSuperadmin() {
+            const status = document.getElementById('superadmin-status');
+            const info = document.getElementById('superadmin-info');
+
+            if (!authToken) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ No auth token</span>';
+                return;
+            }
+
+            try {
+                status.innerHTML = '<span class="status-badge badge-pending">⏳ Checking...</span>';
+
+                const response = await fetch(`${API_BASE}/api/users/me`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+                info.textContent = `Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+
+                if (response.status === 200) {
+                    status.innerHTML = '<span class="status-badge badge-success">✓ Response received</span>';
+                } else {
+                    status.innerHTML = `<span class="status-badge badge-error">✗ Status ${response.status}</span>`;
+                }
+            } catch (error) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ Request Failed</span>';
+                info.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        async function createTenant() {
+            const status = document.getElementById('create-status');
+            const info = document.getElementById('create-info');
+            const tenantName = document.getElementById('tenant-name').value;
+
+            if (!authToken) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ No auth token</span>';
+                return;
+            }
+
+            if (!tenantName) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ Enter a tenant name</span>';
+                return;
+            }
+
+            try {
+                status.innerHTML = '<span class="status-badge badge-pending">⏳ Creating tenant...</span>';
+
+                const response = await fetch(`${API_BASE}/api/tenants`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name: tenantName })
+                });
+
+                const responseText = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    data = responseText;
+                }
+
+                // Get all headers
+                const headers = {};
+                response.headers.forEach((value, key) => {
+                    headers[key] = value;
+                });
+
+                info.textContent = `Status: ${response.status} ${response.statusText}\n\n` +
+                                  `Headers:\n${JSON.stringify(headers, null, 2)}\n\n` +
+                                  `Response:\n${JSON.stringify(data, null, 2)}`;
+
+                if (response.status === 201) {
+                    status.innerHTML = '<span class="status-badge badge-success">✓ Tenant Created!</span>';
+                } else if (response.status === 403) {
+                    status.innerHTML = '<span class="status-badge badge-error">✗ Permission Denied (403)</span>';
+                } else {
+                    status.innerHTML = `<span class="status-badge badge-error">✗ Failed (${response.status})</span>`;
+                }
+            } catch (error) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ Request Failed</span>';
+                info.textContent = `Error: ${error.message}\n${error.stack}`;
+            }
+        }
+
+        async function listTenants() {
+            const status = document.getElementById('list-status');
+            const info = document.getElementById('list-info');
+
+            if (!authToken) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ No auth token</span>';
+                return;
+            }
+
+            try {
+                status.innerHTML = '<span class="status-badge badge-pending">⏳ Loading tenants...</span>';
+
+                const response = await fetch(`${API_BASE}/api/tenants`, {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+                info.textContent = `Status: ${response.status}\n\n` + JSON.stringify(data, null, 2);
+
+                if (response.status === 200) {
+                    const count = data.data?.length || 0;
+                    status.innerHTML = `<span class="status-badge badge-success">✓ Found ${count} tenant(s)</span>`;
+                } else {
+                    status.innerHTML = `<span class="status-badge badge-error">✗ Failed (${response.status})</span>`;
+                }
+            } catch (error) {
+                status.innerHTML = '<span class="status-badge badge-error">✗ Request Failed</span>';
+                info.textContent = `Error: ${error.message}`;
+            }
+        }
+
+        function clearResults() {
+            document.getElementById('token-status').innerHTML = '';
+            document.getElementById('token-info').textContent = '';
+            document.getElementById('superadmin-status').innerHTML = '';
+            document.getElementById('superadmin-info').textContent = '';
+            document.getElementById('create-status').innerHTML = '';
+            document.getElementById('create-info').textContent = '';
+            document.getElementById('list-status').innerHTML = '';
+            document.getElementById('list-info').textContent = '';
+            errors.length = 0;
+            document.getElementById('console-errors').textContent = 'No errors captured yet';
+        }
+
+        // Auto-check localStorage on load
+        setTimeout(checkLocalStorage, 100);
+    </script>
+</body>
+</html>
