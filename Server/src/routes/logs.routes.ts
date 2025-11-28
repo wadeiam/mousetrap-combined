@@ -1,51 +1,11 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { logger, LogLevel } from '../services/logger.service';
-import jwt from 'jsonwebtoken';
+import { authenticate, AuthRequest, requireRole } from '../middleware/auth.middleware';
 
 const router = Router();
 
-/**
- * Authentication middleware for logs routes
- * Only admins and master users can access logs
- */
-const requireAdminAuth = (req: Request, res: Response, next: Function) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        error: 'No token provided',
-      });
-    }
-
-    const token = authHeader.substring(7);
-    const jwtSecret = process.env.JWT_SECRET || 'default-secret';
-    const decoded: any = jwt.verify(token, jwtSecret);
-
-    // Only allow admin and master roles
-    if (decoded.role !== 'admin' && decoded.role !== 'master') {
-      return res.status(403).json({
-        success: false,
-        error: 'Insufficient permissions',
-      });
-    }
-
-    // Attach user info to request
-    (req as any).user = decoded;
-    next();
-  } catch (error: any) {
-    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired token',
-      });
-    }
-    return res.status(500).json({
-      success: false,
-      error: 'Authentication error',
-    });
-  }
-};
+// Apply authentication to all logs routes
+router.use(authenticate);
 
 /**
  * GET /api/logs
@@ -57,8 +17,10 @@ const requireAdminAuth = (req: Request, res: Response, next: Function) => {
  * - since: ISO timestamp - only logs after this time
  * - limit: Max number of logs to return (default 100, max 1000)
  * - offset: Pagination offset (default 0)
+ *
+ * Superadmin only - logs contain system-wide information
  */
-router.get('/', requireAdminAuth, (req: Request, res: Response) => {
+router.get('/', requireRole('superadmin'), (req: AuthRequest, res: Response) => {
   try {
     const {
       level,
@@ -102,7 +64,7 @@ router.get('/', requireAdminAuth, (req: Request, res: Response) => {
 
     // Log the access
     logger.debug('Logs accessed', {
-      userId: (req as any).user.userId,
+      userId: req.user!.userId,
       filters: { level, search, since, limit, offset },
     });
 
@@ -129,9 +91,9 @@ router.get('/', requireAdminAuth, (req: Request, res: Response) => {
 
 /**
  * GET /api/logs/stats
- * Get log statistics
+ * Get log statistics (superadmin only)
  */
-router.get('/stats', requireAdminAuth, (req: Request, res: Response) => {
+router.get('/stats', requireRole('superadmin'), (req: AuthRequest, res: Response) => {
   try {
     const stats = logger.getStats();
 
@@ -152,21 +114,13 @@ router.get('/stats', requireAdminAuth, (req: Request, res: Response) => {
 
 /**
  * DELETE /api/logs
- * Clear all logs (master only)
+ * Clear all logs (superadmin only)
  */
-router.delete('/', requireAdminAuth, (req: Request, res: Response) => {
+router.delete('/', requireRole('superadmin'), (req: AuthRequest, res: Response) => {
   try {
-    // Only master users can clear logs
-    if ((req as any).user.role !== 'master') {
-      return res.status(403).json({
-        success: false,
-        error: 'Only master users can clear logs',
-      });
-    }
-
     logger.clear();
     logger.info('All logs cleared', {
-      userId: (req as any).user.userId,
+      userId: req.user!.userId,
     });
 
     res.json({

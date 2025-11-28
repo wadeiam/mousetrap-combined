@@ -1,7 +1,7 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-11-26
-**Latest Session:** Documentation organization and consolidation
+**Last Updated:** 2025-11-27
+**Latest Session:** Dashboard tenant filtering fix + device move claim preservation
 
 ---
 
@@ -59,12 +59,14 @@ make compile
 # Upload firmware via serial (auto-detect port, 921600 baud)
 make upload
 
-# Upload with lower baud rate (more reliable)
-arduino-cli upload -p /dev/cu.usbserial-10 --fqbn "esp32:esp32:esp32s3:..." -UploadSpeed=115200 .
+# Upload with lower baud rate (RECOMMENDED - 921600 often fails)
+arduino-cli upload -p /dev/cu.usbserial-10 --fqbn "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=115200,DebugLevel=none,EraseFlash=none,USBMode=hwcdc" .
 
 # Deploy firmware OTA
 curl -u "ops:changeme" -F "file=@build/mousetrap_arduino.ino.bin" http://192.168.133.46/uploadfw
 ```
+
+**IMPORTANT:** Serial upload at 921600 baud often fails with "chip stopped responding". Use 115200 baud for reliable uploads.
 
 ### Serial Monitoring
 
@@ -205,44 +207,60 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 
 ---
 
-## Current Session Notes (2025-11-26)
+## Current Session Notes (2025-11-27)
 
-### Latest Work: Documentation Organization
+### Latest Work: Dashboard Tenant Filtering + Device Move Claim Preservation
 
 **Completed:**
-- Reorganized documentation system
-- Updated DOCUMENTATION-SYSTEM-GUIDE.md with complete index
-- Created consolidated HANDOFF.md (this file)
-- Documented persistent operational info
+- **Fixed Master Tenant aggregate view logic** - Superadmins now see correct data:
+  - When viewing Master Tenant → Shows ALL devices/alerts/stats across all tenants
+  - When switched to a subtenant → Shows only that specific tenant's data
+  - Files modified: `devices.routes.ts`, `alerts.routes.ts`, `dashboard.routes.ts`
+- **Fixed device move to preserve claim status** - Moving devices between tenants no longer breaks claim:
+  - Device UUID is preserved (no longer generates new ID)
+  - Uses correct `publishDeviceCommand` method
+  - Sends `update_tenant` command to device's OLD tenant topic
+  - No revocation messages are sent
+  - Files modified: `devices.routes.ts`, `mqtt.types.ts`
+- **Dashboard UI improvements:**
+  - Fixed stats grid layout (5 cards with responsive columns)
+  - Added "Offline Devices" stat card
+  - Fixed invalid role 'member' → 'viewer' in Users page
+  - AlertCard now shows tenant name and location for Master Tenant view
 
 **Previous Sessions:**
-- AP+STA mode implementation for captive portal
-- Two-generation log rotation (prevLogs.txt, prevLogs2.txt)
-- Standalone mode for WiFi-only setup
-- Captive portal URL detection fix (getBaseUrl())
+- Robust device tenant move with MQTT coordination
+- AP mode not broadcasting after WiFi scan fix
+- MQTT retained revoke message fix (changed to non-retained)
+- Subtenant Firmware page (simplified view vs Master Tenant admin view)
+- Kitchen device tenant mismatch fix
+- Documentation organization
 
 ### Current Tasks
 
-**In Progress:**
-- [ ] Verify device claimed status after captive portal fix
-- [ ] Test AP+STA mode with WiFi scanning
-- [ ] Complete end-to-end captive portal claiming test
-
 **Pending:**
-- [ ] Fix WiFi scanning returns 0 networks in AP_STA mode
-- [ ] Test complete claim flow after WiFi scanning works
+- [ ] Add tenant purge settings to master tenant
 - [ ] Implement new button handler (click=reset alarm, 2s=reboot, 10s=factory reset)
+- [ ] Test AP mode broadcasting after fix
 
 ### Known Issues
 
+**Serial Upload at 921600 Baud:**
+- Often fails with "chip stopped responding"
+- Use 115200 baud for reliable uploads (see Firmware Compilation section)
+
+**Stranded Device Root Cause (Kitchen Device 2025-11-27):**
+- Device was moved between tenants in the dashboard but device wasn't notified
+- Device still had old tenant ID in NVS (stored in "device" namespace)
+- Server database showed new tenant, but device connected with old tenant credentials
+- MQTT authentication failed because credentials didn't match
+- **Fix implemented:** Server now sends `update_tenant` MQTT command before updating database
+- **If device is offline during move:** Warning is shown; device needs manual re-provisioning
+
 **WiFi Scanning in AP_STA Mode:**
 - `WiFi.scanNetworks()` returns 0 when ESP32-S3 is in AP_STA mode
-- Current approach: Temporarily switch to STA mode during scan
-- Status: Testing
-
-**Filesystem OTA May Cause Unclaim:**
-- After littlefs.bin upload, device may unclaim
-- Workaround: Re-claim device if needed
+- Current approach: Temporarily switch to STA mode during scan, then restore AP
+- AP is now always restored after scan completes (fix applied 2025-11-27)
 
 ---
 
@@ -256,6 +274,7 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 ### Server to Device
 - `tenant/{tenantId}/device/{clientId}/command/reboot` - Reboot command
 - `tenant/{tenantId}/device/{clientId}/command/alert_reset` - Clear alert
+- `tenant/{tenantId}/device/{clientId}/command/update_tenant` - Move device to new tenant
 - `global/firmware/latest` - Global firmware updates
 - `global/filesystem/latest` - Global filesystem updates
 

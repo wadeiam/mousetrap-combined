@@ -205,44 +205,54 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 
 ---
 
-## Current Session Notes (2025-11-26)
+## Current Session Notes (2025-11-27)
 
-### Latest Work: Documentation Organization
+### Latest Work: Bulletproof Device Claiming System
 
 **Completed:**
-- Reorganized documentation system
-- Updated DOCUMENTATION-SYSTEM-GUIDE.md with complete index
-- Created consolidated HANDOFF.md (this file)
-- Documented persistent operational info
+- Implemented token-verified MQTT revocation (prevents accidental unclaims)
+- Added `/api/device/verify-revocation` endpoint for device token verification
+- Hardened `/api/device/claim-status` endpoint (returns 404 instead of `claimed:false` for missing devices)
+- Created `device_claim_audit` table for complete audit trail of all claim/unclaim operations
+- Added source tracking to all unclaim operations (`factory_reset`, `local_ui`, `mqtt_revoke`, `claim_verify`)
+- Firmware changes: `verifyRevocationToken()`, `unclaimDeviceWithSource()`, hardened MQTT revoke handler
 
 **Previous Sessions:**
+- Documentation organization (2025-11-26)
 - AP+STA mode implementation for captive portal
 - Two-generation log rotation (prevLogs.txt, prevLogs2.txt)
 - Standalone mode for WiFi-only setup
 - Captive portal URL detection fix (getBaseUrl())
 
+### Bulletproof Claiming: How It Works
+
+**Problem Solved:** Devices were accidentally unclaiming due to network issues, server errors, or malformed MQTT messages.
+
+**Solution:** Token-verified revocation - device MUST verify with server before unclaiming.
+
+**Flow:**
+1. Admin clicks "Unclaim" in dashboard
+2. Server generates one-time revocation token (5 min expiry)
+3. Server sends MQTT `/revoke` message with token
+4. Device receives message, extracts token
+5. Device calls `POST /api/device/verify-revocation` to verify token
+6. Server confirms token validity → Device unclaims
+7. **Any error = Device stays claimed** (network error, invalid token, timeout)
+
 ### Current Tasks
 
-**In Progress:**
-- [ ] Verify device claimed status after captive portal fix
-- [ ] Test AP+STA mode with WiFi scanning
-- [ ] Complete end-to-end captive portal claiming test
+**Completed:**
+- [x] Token-verified MQTT revocation
+- [x] Hardened claim-status endpoint
+- [x] Device audit logging
+- [x] Source tracking for all unclaims
 
-**Pending:**
-- [ ] Fix WiFi scanning returns 0 networks in AP_STA mode
-- [ ] Test complete claim flow after WiFi scanning works
-- [ ] Implement new button handler (click=reset alarm, 2s=reboot, 10s=factory reset)
-
-### Known Issues
+**Known Issues:**
 
 **WiFi Scanning in AP_STA Mode:**
 - `WiFi.scanNetworks()` returns 0 when ESP32-S3 is in AP_STA mode
 - Current approach: Temporarily switch to STA mode during scan
 - Status: Testing
-
-**Filesystem OTA May Cause Unclaim:**
-- After littlefs.bin upload, device may unclaim
-- Workaround: Re-claim device if needed
 
 ---
 

@@ -25,7 +25,7 @@ npm run migrate:create <name>
 
 ---
 
-## Current Schema (Migration 006)
+## Current Schema (Migration 008)
 
 ### Core Tables
 
@@ -51,7 +51,7 @@ npm run migrate:create <name>
 - `expires_at` TIMESTAMP
 - `claimed_by_device_id` UUID
 
-**device_claiming_queue** (NEW - Migration 006)
+**device_claiming_queue** (Migration 006)
 - `id` SERIAL PK
 - `mac_address` VARCHAR(17) UNIQUE NOT NULL
 - `serial_number` VARCHAR(50)
@@ -61,6 +61,23 @@ npm run migrate:create <name>
 - **Purpose:** Tracks devices in claiming mode (10-minute window)
 - **Cleanup:** Automatic via `cleanup_expired_claiming_devices()` function
 - **Used by:** Seamless claiming system with button activation
+
+**device_claim_audit** (NEW - Migration 008)
+- `id` SERIAL PK
+- `device_id` UUID (may be NULL if device deleted)
+- `device_mac` VARCHAR(20) NOT NULL
+- `device_name` VARCHAR(100)
+- `tenant_id` UUID
+- `action` VARCHAR(20) NOT NULL (`unclaim`, `claim`, `move`, `reclaim`)
+- `trigger_source` VARCHAR(30) NOT NULL (`admin_dashboard`, `device_factory_reset`, `device_local_ui`, `tenant_delete`, `mqtt_revoke`)
+- `actor_user_id` UUID (NULL for device-initiated)
+- `actor_ip` VARCHAR(45)
+- `reason` TEXT
+- `metadata` JSONB DEFAULT '{}'
+- `created_at` TIMESTAMP DEFAULT NOW()
+- **Purpose:** Complete audit trail of all claim/unclaim operations
+- **Indexes:** device_id, device_mac, tenant_id, created_at, action
+- **Used by:** Bulletproof claiming system for security/debugging
 
 **firmware_versions**
 - `id` UUID PK
@@ -117,7 +134,9 @@ npm run migrate:create <name>
 - `003_add_claim_codes.sql`
 - `004_add_multi_tenancy.sql`
 - `005_create_user_tenant_memberships.sql`
-- `006_create_device_claiming_queue.sql` (NEW - Seamless claiming system)
+- `006_create_device_claiming_queue.sql` - Seamless claiming system
+- `007_...` (if exists)
+- `008_create_device_claim_audit.sql` - Claim/unclaim audit trail (NEW - Bulletproof claiming)
 
 ### How It Works
 1. Migrations tracked in `schema_migrations` table

@@ -197,22 +197,49 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const user = userResult.rows[0];
 
-    // Get user's tenant memberships
-    // Priority: superadmin role first, then by device count, then alphabetical
-    const tenantsResult = await req.app.locals.dbPool.query(
-      `SELECT t.id as tenant_id, t.name as tenant_name, utm.role,
-              (SELECT COUNT(*) FROM devices d WHERE d.tenant_id = t.id AND d.unclaimed_at IS NULL) as device_count
-       FROM user_tenant_memberships utm
-       INNER JOIN tenants t ON utm.tenant_id = t.id
-       WHERE utm.user_id = $1
-       ORDER BY
-         CASE WHEN utm.role = 'superadmin' THEN 0 ELSE 1 END,
-         device_count DESC,
-         t.name ASC`,
+    // Check if user is a superadmin in the Master Tenant
+    const superadminCheck = await req.app.locals.dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1
+         AND tenant_id = '00000000-0000-0000-0000-000000000001'
+         AND role = 'superadmin'`,
       [user.id]
     );
+    const isSuperadmin = superadminCheck.rows.length > 0;
 
-    const tenantMemberships = tenantsResult.rows;
+    let tenantMemberships;
+
+    if (isSuperadmin) {
+      // Superadmins see ALL tenants with implicit superadmin role
+      const tenantsResult = await req.app.locals.dbPool.query(
+        `SELECT t.id as tenant_id, t.name as tenant_name,
+                COALESCE(utm.role, 'superadmin') as role,
+                (SELECT COUNT(*) FROM devices d WHERE d.tenant_id = t.id AND d.unclaimed_at IS NULL) as device_count
+         FROM tenants t
+         LEFT JOIN user_tenant_memberships utm ON utm.tenant_id = t.id AND utm.user_id = $1
+         ORDER BY
+           CASE WHEN t.id = '00000000-0000-0000-0000-000000000001' THEN 0 ELSE 1 END,
+           device_count DESC,
+           t.name ASC`,
+        [user.id]
+      );
+      tenantMemberships = tenantsResult.rows;
+    } else {
+      // Regular users only see tenants they have explicit membership in
+      const tenantsResult = await req.app.locals.dbPool.query(
+        `SELECT t.id as tenant_id, t.name as tenant_name, utm.role,
+                (SELECT COUNT(*) FROM devices d WHERE d.tenant_id = t.id AND d.unclaimed_at IS NULL) as device_count
+         FROM user_tenant_memberships utm
+         INNER JOIN tenants t ON utm.tenant_id = t.id
+         WHERE utm.user_id = $1
+         ORDER BY
+           CASE WHEN utm.role = 'superadmin' THEN 0 ELSE 1 END,
+           device_count DESC,
+           t.name ASC`,
+        [user.id]
+      );
+      tenantMemberships = tenantsResult.rows;
+    }
 
     // Verify password
     const isValidPassword = await bcrypt.compare(password, user.password_hash);
@@ -309,20 +336,46 @@ router.post('/switch-tenant', async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'tenantId required' });
     }
 
-    // Verify user has access to this tenant
-    const membershipResult = await req.app.locals.dbPool.query(
-      `SELECT utm.role, t.name as tenant_name
-       FROM user_tenant_memberships utm
-       JOIN tenants t ON utm.tenant_id = t.id
-       WHERE utm.user_id = $1 AND utm.tenant_id = $2`,
-      [decoded.userId, tenantId]
+    // Check if user is a superadmin in the Master Tenant (implicit access to all tenants)
+    const superadminCheck = await req.app.locals.dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1
+         AND tenant_id = '00000000-0000-0000-0000-000000000001'
+         AND role = 'superadmin'`,
+      [decoded.userId]
     );
+    const isSuperadmin = superadminCheck.rows.length > 0;
 
-    if (membershipResult.rows.length === 0) {
-      return res.status(403).json({ success: false, error: 'No access to this tenant' });
+    let tenantName: string;
+    let role: string;
+
+    if (isSuperadmin) {
+      // Superadmins can switch to any tenant
+      const tenantResult = await req.app.locals.dbPool.query(
+        `SELECT name FROM tenants WHERE id = $1`,
+        [tenantId]
+      );
+      if (tenantResult.rows.length === 0) {
+        return res.status(404).json({ success: false, error: 'Tenant not found' });
+      }
+      tenantName = tenantResult.rows[0].name;
+      role = 'superadmin';
+    } else {
+      // Regular users need explicit membership
+      const membershipResult = await req.app.locals.dbPool.query(
+        `SELECT utm.role, t.name as tenant_name
+         FROM user_tenant_memberships utm
+         JOIN tenants t ON utm.tenant_id = t.id
+         WHERE utm.user_id = $1 AND utm.tenant_id = $2`,
+        [decoded.userId, tenantId]
+      );
+
+      if (membershipResult.rows.length === 0) {
+        return res.status(403).json({ success: false, error: 'No access to this tenant' });
+      }
+      tenantName = membershipResult.rows[0].tenant_name;
+      role = membershipResult.rows[0].role;
     }
-
-    const membership = membershipResult.rows[0];
 
     // Generate new JWT with the selected tenant
     const accessToken = jwt.sign(
@@ -330,7 +383,7 @@ router.post('/switch-tenant', async (req: Request, res: Response) => {
         userId: decoded.userId,
         email: decoded.email,
         tenantId: tenantId,
-        role: membership.role,
+        role: role,
       },
       jwtSecret,
       { expiresIn: process.env.JWT_EXPIRES_IN || '7d' } as SignOptions
@@ -340,7 +393,8 @@ router.post('/switch-tenant', async (req: Request, res: Response) => {
       userId: decoded.userId,
       fromTenant: decoded.tenantId,
       toTenant: tenantId,
-      tenantName: membership.tenant_name,
+      tenantName: tenantName,
+      isSuperadmin,
     });
 
     res.json({
@@ -348,8 +402,8 @@ router.post('/switch-tenant', async (req: Request, res: Response) => {
       data: {
         accessToken,
         tenantId,
-        tenantName: membership.tenant_name,
-        role: membership.role,
+        tenantName: tenantName,
+        role: role,
       },
     });
   } catch (error: any) {

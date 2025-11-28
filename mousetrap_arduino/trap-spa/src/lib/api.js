@@ -436,3 +436,13 @@ export async function standaloneMode(config) {
     body: JSON.stringify(config),
   });
 }
+
+export async function updateWiFi(config) {
+  // config: { ssid, password }
+  // Updates WiFi credentials on a claimed device without affecting claim status
+  // Device will reboot and connect to the new WiFi network
+  return apiFetch('/api/wifi/update', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}

@@ -524,16 +524,7 @@ void startWiFiScan() {
         WiFi.mode(WIFI_STA);
         delay(500);
         n = WiFi.scanNetworks(false, true, false, 1000);
-        // Restore AP_STA mode
-        WiFi.mode(WIFI_AP_STA);
-        delay(200);
-        // Re-start AP (may have been lost) - use MAC from global
-        {
-          String macSuffix = g_macUpper.length() > 4 ? g_macUpper.substring(g_macUpper.length() - 5) : "0000";
-          macSuffix.replace(":", "");
-          String apName = "MouseTrap-" + macSuffix;
-          WiFi.softAP(apName.c_str());
-        }
+        // NOTE: AP restoration is handled after the loop below
         break;
     }
 
@@ -541,6 +532,31 @@ void startWiFiScan() {
 
     if (n > 0) break;
     delay(500);  // Wait between attempts
+  }
+
+  // ALWAYS restore AP mode after scanning (scanning may have disrupted it)
+  if (isAPMode) {
+    Serial.println("[WIFI-SCAN] Restoring AP after scan...");
+    WiFi.mode(WIFI_AP_STA);
+    delay(100);
+
+    String macSuffix = g_macUpper.length() > 5 ? g_macUpper.substring(g_macUpper.length() - 5) : "0000";
+    macSuffix.replace(":", "");
+    String apName = "MouseTrap-" + macSuffix;
+
+    // Configure AP IP before starting
+    IPAddress apIP(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    WiFi.softAPConfig(apIP, gateway, subnet);
+
+    bool apStarted = WiFi.softAP(apName.c_str());
+    if (apStarted) {
+      Serial.printf("[WIFI-SCAN] AP restored: %s @ %s\n", apName.c_str(), WiFi.softAPIP().toString().c_str());
+    } else {
+      Serial.println("[WIFI-SCAN] WARNING: Failed to restore AP!");
+      addSystemLog("[WIFI-SCAN] WARNING: AP restoration failed!");
+    }
   }
 
   if (n > 0) {
@@ -1381,6 +1397,86 @@ bool claimDevice(const String& claimCode) {
   }
 }
 
+// Verify revocation token with server
+// Returns true only if server confirms the token is valid
+// Returns false on ANY error (network, timeout, invalid token) - device stays claimed
+bool verifyRevocationToken(const char* token) {
+  Serial.println("[REVOKE-VERIFY] ========================================");
+  Serial.println("[REVOKE-VERIFY] Verifying revocation token with server...");
+  Serial.println("[REVOKE-VERIFY] ========================================");
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[REVOKE-VERIFY] WiFi not connected - rejecting revocation");
+    Serial.println("[REVOKE-VERIFY] Result: FALSE (device stays claimed)");
+    return false;
+  }
+
+  HTTPClient http;
+  String url = String(CLAIM_SERVER_URL) + "/api/device/verify-revocation";
+
+  Serial.printf("[REVOKE-VERIFY] Request URL: %s\n", url.c_str());
+  Serial.printf("[REVOKE-VERIFY] MAC Address: %s\n", g_macUpper.c_str());
+  Serial.printf("[REVOKE-VERIFY] Token: %.16s...\n", token);
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(10000);  // 10 second timeout
+
+  // Build request payload
+  JsonDocument doc;
+  doc["mac"] = g_macUpper;
+  doc["token"] = token;
+
+  String payload;
+  serializeJson(doc, payload);
+
+  Serial.printf("[REVOKE-VERIFY] Sending POST request...\n");
+  int httpCode = http.POST(payload);
+  Serial.printf("[REVOKE-VERIFY] HTTP Response Code: %d\n", httpCode);
+
+  if (httpCode == 200) {
+    String response = http.getString();
+    Serial.printf("[REVOKE-VERIFY] Response payload: %s\n", response.c_str());
+
+    JsonDocument responseDoc;
+    DeserializationError error = deserializeJson(responseDoc, response);
+
+    if (error) {
+      Serial.printf("[REVOKE-VERIFY] JSON parse error: %s\n", error.c_str());
+      Serial.println("[REVOKE-VERIFY] Result: FALSE (device stays claimed)");
+      http.end();
+      return false;
+    }
+
+    bool valid = responseDoc["valid"] | false;
+
+    if (valid) {
+      Serial.println("[REVOKE-VERIFY] ========================================");
+      Serial.println("[REVOKE-VERIFY] SERVER CONFIRMED TOKEN IS VALID");
+      Serial.println("[REVOKE-VERIFY] Result: TRUE (proceed with unclaim)");
+      Serial.println("[REVOKE-VERIFY] ========================================");
+      http.end();
+      return true;
+    } else {
+      const char* reason = responseDoc["reason"] | "unknown";
+      Serial.printf("[REVOKE-VERIFY] Server rejected token: %s\n", reason);
+      Serial.println("[REVOKE-VERIFY] Result: FALSE (device stays claimed)");
+      http.end();
+      return false;
+    }
+  } else if (httpCode < 0) {
+    Serial.printf("[REVOKE-VERIFY] Network error: %s\n", http.errorToString(httpCode).c_str());
+    Serial.println("[REVOKE-VERIFY] Result: FALSE (device stays claimed)");
+    http.end();
+    return false;
+  } else {
+    Serial.printf("[REVOKE-VERIFY] Unexpected HTTP code: %d\n", httpCode);
+    Serial.println("[REVOKE-VERIFY] Result: FALSE (device stays claimed)");
+    http.end();
+    return false;
+  }
+}
+
 // Check claim status with server (unauthenticated endpoint)
 // Returns ClaimVerificationResult to distinguish between network errors and explicit revocation
 ClaimVerificationResult checkClaimStatusWithServer() {
@@ -1476,14 +1572,16 @@ ClaimVerificationResult checkClaimStatusWithServer() {
   }
 }
 
-// Unclaim device (clears credentials and disconnects)
-void unclaimDevice() {
+// Unclaim device with source tracking (clears credentials and disconnects)
+// source: 'factory_reset', 'local_ui', 'mqtt_revoke', 'claim_verify', 'unknown'
+void unclaimDeviceWithSource(const char* source) {
   // ============================================================================
   // COMPREHENSIVE UNCLAIM LOGGING - Track why device is being unclaimed
   // ============================================================================
   Serial.println("[UNCLAIM] ========================================");
   Serial.println("[UNCLAIM] DEVICE UNCLAIM INITIATED");
   Serial.println("[UNCLAIM] ========================================");
+  Serial.printf("[UNCLAIM] Source: %s\n", source);
   Serial.printf("[UNCLAIM] Timestamp: %lu ms\n", millis());
   Serial.printf("[UNCLAIM] Current device state:\n");
   Serial.printf("[UNCLAIM]   - deviceClaimed: %s\n", deviceClaimed ? "true" : "false");
@@ -1496,10 +1594,10 @@ void unclaimDevice() {
   Serial.printf("[UNCLAIM]   - Free heap: %u bytes\n", ESP.getFreeHeap());
 
   // Add to system log for persistence
-  addSystemLog("[UNCLAIM] Device unclaim initiated - MAC: " + g_macUpper);
+  addSystemLog("[UNCLAIM] Device unclaim initiated - Source: " + String(source) + ", MAC: " + g_macUpper);
   addSystemLog("[UNCLAIM] Device was: " + claimedDeviceName + " (ID: " + claimedDeviceId + ")");
 
-  // Notify server if we're online
+  // Notify server if we're online (include source for audit logging)
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("[UNCLAIM] Notifying server...");
 
@@ -1510,17 +1608,19 @@ void unclaimDevice() {
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(5000);
 
-    // Build request payload
+    // Build request payload with source for audit trail
     JsonDocument doc;
     doc["mac"] = g_macUpper;
+    doc["source"] = source;  // Tell server why unclaim happened
 
     String payload;
     serializeJson(doc, payload);
 
+    Serial.printf("[UNCLAIM] Sending: %s\n", payload.c_str());
     int httpCode = http.POST(payload);
 
     if (httpCode == 200) {
-      Serial.println("[UNCLAIM] ✓ Server notified successfully");
+      Serial.println("[UNCLAIM] Server notified successfully");
       addSystemLog("[UNCLAIM] Server notified of unclaim");
     } else {
       Serial.printf("[UNCLAIM] Server notification failed (HTTP %d) - device will retry on next boot\n", httpCode);
@@ -1553,9 +1653,14 @@ void unclaimDevice() {
   mqttSetup();
 
   Serial.println("[UNCLAIM] ========================================");
-  Serial.println("[UNCLAIM] ✓ Device unclaimed successfully");
+  Serial.println("[UNCLAIM] Device unclaimed successfully");
   Serial.println("[UNCLAIM] ========================================");
   addSystemLog("[UNCLAIM] Device unclaimed successfully - ready for re-provisioning");
+}
+
+// Unclaim device (legacy wrapper - uses 'unknown' source)
+void unclaimDevice() {
+  unclaimDeviceWithSource("unknown");
 }
 
 // ============================================================================
@@ -1659,7 +1764,7 @@ ClaimCredentials generateClaimCredentials() {
 
 // Register and claim device in one step using HMAC token authentication
 // This eliminates the need for manual claim codes
-bool registerAndClaimDevice(const String& email, const String& password, const String& deviceName) {
+bool registerAndClaimDevice(const String& email, const String& password, const String& deviceName, bool isNewAccount = true) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[REGISTER-CLAIM] WiFi not connected");
     return false;
@@ -1690,9 +1795,33 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
   Serial.printf("[REGISTER-CLAIM] Email: %s\n", email.c_str());
   Serial.printf("[REGISTER-CLAIM] Device Name: %s\n", deviceName.c_str());
 
+  // DEBUG: Log network state before HTTP call
+  Serial.println("[REGISTER-CLAIM] === DEBUG: Network State ===");
+  Serial.printf("[REGISTER-CLAIM] WiFi.status() = %d\n", WiFi.status());
+  Serial.printf("[REGISTER-CLAIM] WiFi.localIP() = %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[REGISTER-CLAIM] WiFi.gatewayIP() = %s\n", WiFi.gatewayIP().toString().c_str());
+  Serial.printf("[REGISTER-CLAIM] WiFi.subnetMask() = %s\n", WiFi.subnetMask().toString().c_str());
+  Serial.printf("[REGISTER-CLAIM] WiFi.dnsIP() = %s\n", WiFi.dnsIP().toString().c_str());
+  Serial.printf("[REGISTER-CLAIM] WiFi.RSSI() = %d dBm\n", WiFi.RSSI());
+
+  // DEBUG: Try DNS resolution of server IP (even though it's an IP, this tests network stack)
+  IPAddress serverIP;
+  if (WiFi.hostByName("192.168.133.110", serverIP)) {
+    Serial.printf("[REGISTER-CLAIM] DNS/IP lookup success: %s\n", serverIP.toString().c_str());
+  } else {
+    Serial.println("[REGISTER-CLAIM] WARNING: DNS/IP lookup failed!");
+  }
+
+  // DEBUG: Log free heap before HTTP
+  Serial.printf("[REGISTER-CLAIM] Free heap before HTTP: %d bytes\n", ESP.getFreeHeap());
+  Serial.println("[REGISTER-CLAIM] === END DEBUG ===");
+
+  addSystemLog("[REGISTER-CLAIM] Attempting HTTP to: " + url);
+
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(15000);  // 15 second timeout
+  http.setConnectTimeout(10000);  // 10 second connect timeout
 
   // Build request payload
   JsonDocument doc;
@@ -1702,6 +1831,7 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
   doc["email"] = email;
   doc["password"] = password;
   doc["deviceName"] = deviceName;
+  doc["isNewAccount"] = isNewAccount;
 
   // Add device info
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
@@ -1716,10 +1846,38 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
   Serial.printf("[REGISTER-CLAIM] Payload (password hidden): mac=%s, token=%s..., timestamp=%s, email=%s, deviceName=%s\n",
                 creds.mac.c_str(), creds.token.substring(0, 16).c_str(),
                 creds.timestamp.c_str(), email.c_str(), deviceName.c_str());
+  Serial.printf("[REGISTER-CLAIM] Payload size: %d bytes\n", payload.length());
 
+  Serial.println("[REGISTER-CLAIM] Starting HTTP POST...");
+  unsigned long startTime = millis();
   int httpCode = http.POST(payload);
+  unsigned long duration = millis() - startTime;
 
+  Serial.printf("[REGISTER-CLAIM] HTTP POST completed in %lu ms\n", duration);
   Serial.printf("[REGISTER-CLAIM] HTTP Response Code: %d\n", httpCode);
+
+  // DEBUG: Translate error codes
+  if (httpCode < 0) {
+    Serial.println("[REGISTER-CLAIM] === HTTP ERROR DETAILS ===");
+    switch(httpCode) {
+      case -1: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_CONNECTION_REFUSED (-1)"); break;
+      case -2: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_SEND_HEADER_FAILED (-2)"); break;
+      case -3: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3)"); break;
+      case -4: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_NOT_CONNECTED (-4)"); break;
+      case -5: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_CONNECTION_LOST (-5)"); break;
+      case -6: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_NO_STREAM (-6)"); break;
+      case -7: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_NO_HTTP_SERVER (-7)"); break;
+      case -8: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_TOO_LESS_RAM (-8)"); break;
+      case -9: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_ENCODING (-9)"); break;
+      case -10: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_STREAM_WRITE (-10)"); break;
+      case -11: Serial.println("[REGISTER-CLAIM] ERROR: HTTPC_ERROR_READ_TIMEOUT (-11)"); break;
+      default: Serial.printf("[REGISTER-CLAIM] ERROR: Unknown code %d\n", httpCode); break;
+    }
+    Serial.printf("[REGISTER-CLAIM] WiFi still connected: %s\n", WiFi.status() == WL_CONNECTED ? "YES" : "NO");
+    Serial.printf("[REGISTER-CLAIM] Free heap after error: %d bytes\n", ESP.getFreeHeap());
+    addSystemLog("[REGISTER-CLAIM] HTTP error code: " + String(httpCode));
+    Serial.println("[REGISTER-CLAIM] === END ERROR DETAILS ===");
+  }
 
   if (httpCode == 200 || httpCode == 201) {
     String response = http.getString();
@@ -1734,17 +1892,21 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
       return false;
     }
 
-    if (responseDoc["success"] == true && responseDoc["data"].is<JsonObject>()) {
-      JsonObject data = responseDoc["data"];
+    if (responseDoc["success"] == true) {
+      // Server returns data at top level for firmware compatibility
+      // deviceId, tenantId at top level, mqttCredentials.username/password
+      String deviceId = responseDoc["deviceId"].as<String>();
+      String tenantId = responseDoc["tenantId"].as<String>();
+      String mqttClientId = responseDoc["mqttClientId"].as<String>();
+      String mqttBroker = responseDoc["mqttBroker"].as<String>();
 
-      // Extract MQTT credentials from response
-      String deviceId = data["deviceId"].as<String>();
-      String tenantId = data["tenantId"].as<String>();
-      String mqttClientId = data["mqttClientId"].as<String>();
-      String mqttUsername = data["mqttUsername"].as<String>();
-      String mqttPassword = data["mqttPassword"].as<String>();
-      String mqttBroker = data["mqttBrokerUrl"].as<String>();
-      String respDeviceName = data["deviceName"].as<String>();
+      // MQTT credentials nested under mqttCredentials object
+      JsonObject mqttCreds = responseDoc["mqttCredentials"];
+      String mqttUsername = mqttCreds["username"].as<String>();
+      String mqttPassword = mqttCreds["password"].as<String>();
+
+      // deviceName from data.device or just use what we sent
+      String respDeviceName = deviceName;
 
       // Remove mqtt:// prefix if present
       mqttBroker.replace("mqtt://", "");
@@ -2258,17 +2420,48 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  // Handle device revocation
+  // Handle device revocation - REQUIRES TOKEN VERIFICATION
   if (strstr(topic, "/revoke")) {
     Serial.println("[MQTT-REVOKE] ========================================");
     Serial.println("[MQTT-REVOKE] REVOCATION COMMAND RECEIVED FROM SERVER");
     Serial.println("[MQTT-REVOKE] ========================================");
     Serial.printf("[MQTT-REVOKE] Topic: %s\n", topic);
-    Serial.println("[MQTT-REVOKE] Server has sent an explicit revocation command");
-    Serial.println("[MQTT-REVOKE] This device is being unclaimed immediately");
-    Serial.println("[MQTT-REVOKE] ========================================");
-    addSystemLog("[MQTT-REVOKE] Server sent revocation command via MQTT - unclaiming device");
-    unclaimDevice();
+
+    // Extract token from the revocation message
+    const char* token = doc["token"];
+    const char* action = doc["action"];
+
+    if (!token || strlen(token) == 0) {
+      Serial.println("[MQTT-REVOKE] REJECTED: No token in revocation message");
+      Serial.println("[MQTT-REVOKE] Device will NOT unclaim without valid token");
+      addSystemLog("[MQTT-REVOKE] Rejected revocation - missing token");
+      return;
+    }
+
+    if (!action || strcmp(action, "revoke") != 0) {
+      Serial.println("[MQTT-REVOKE] REJECTED: Invalid action in revocation message");
+      addSystemLog("[MQTT-REVOKE] Rejected revocation - invalid action");
+      return;
+    }
+
+    Serial.printf("[MQTT-REVOKE] Token received: %.16s...\n", token);
+    Serial.println("[MQTT-REVOKE] Verifying token with server...");
+    addSystemLog("[MQTT-REVOKE] Verifying revocation token with server...");
+
+    // Verify the token with the server before unclaiming
+    if (verifyRevocationToken(token)) {
+      Serial.println("[MQTT-REVOKE] ========================================");
+      Serial.println("[MQTT-REVOKE] TOKEN VERIFIED - Proceeding with unclaim");
+      Serial.println("[MQTT-REVOKE] ========================================");
+      addSystemLog("[MQTT-REVOKE] Token verified - unclaiming device");
+      unclaimDeviceWithSource("mqtt_revoke");
+    } else {
+      Serial.println("[MQTT-REVOKE] ========================================");
+      Serial.println("[MQTT-REVOKE] TOKEN VERIFICATION FAILED");
+      Serial.println("[MQTT-REVOKE] Device will STAY CLAIMED");
+      Serial.println("[MQTT-REVOKE] ========================================");
+      addSystemLog("[MQTT-REVOKE] Token verification failed - staying claimed");
+    }
     return;
   }
 
@@ -2318,6 +2511,61 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         Serial.println("[MQTT] Snapshot capture requested via server command");
         addSystemLog("[MQTT] Capturing snapshot via server command");
         captureAndUploadSnapshot();
+      } else if (strcmp(cmd, "update_tenant") == 0) {
+        // Update tenant credentials - used when moving device between tenants
+        Serial.println("[MQTT-TENANT] ========================================");
+        Serial.println("[MQTT-TENANT] TENANT UPDATE COMMAND RECEIVED");
+        Serial.println("[MQTT-TENANT] ========================================");
+
+        const char* newTenantId = doc["tenantId"];
+        const char* newDeviceId = doc["deviceId"];
+        const char* newDeviceName = doc["deviceName"];
+        const char* moveId = doc["moveId"];  // Track the move operation
+
+        if (newTenantId && newDeviceId) {
+          Serial.printf("[MQTT-TENANT] Updating tenant from %s to %s\n",
+                        claimedTenantId.c_str(), newTenantId);
+          Serial.printf("[MQTT-TENANT] New device name: %s\n", newDeviceName ? newDeviceName : "(unchanged)");
+          addSystemLog("[MQTT-TENANT] Updating tenant credentials");
+
+          // Store old tenant for confirmation message
+          String oldTenantId = claimedTenantId;
+
+          // Update credentials in memory
+          claimedTenantId = String(newTenantId);
+          claimedDeviceId = String(newDeviceId);
+          if (newDeviceName) claimedDeviceName = String(newDeviceName);
+
+          // Persist to preferences using devicePrefs (same as saveClaimedCredentials)
+          devicePrefs.begin("device", false);
+          devicePrefs.putString("tenantId", claimedTenantId);
+          devicePrefs.putString("deviceId", claimedDeviceId);
+          devicePrefs.putString("deviceName", claimedDeviceName);
+          devicePrefs.end();
+
+          Serial.println("[MQTT-TENANT] Credentials saved to NVS");
+          addSystemLog("[MQTT-TENANT] Tenant credentials saved, reconnecting...");
+
+          // Disconnect and reconnect with new tenant
+          mqttClient.disconnect();
+          mqttReallyConnected = false;
+          lastMqttReconnect = 0;  // Force immediate reconnect
+
+          // The device will automatically reconnect with new credentials
+          // and subscribe to new tenant's topics
+
+          Serial.println("[MQTT-TENANT] ========================================");
+          Serial.printf("[MQTT-TENANT] Tenant move complete: %s -> %s\n",
+                        oldTenantId.c_str(), claimedTenantId.c_str());
+          Serial.println("[MQTT-TENANT] Device will reconnect with new credentials");
+          Serial.println("[MQTT-TENANT] ========================================");
+
+          // Note: Confirmation will be sent after reconnecting to new tenant
+          // via the regular status publish mechanism
+        } else {
+          Serial.println("[MQTT-TENANT] ERROR: Missing required fields (tenantId, deviceId)");
+          addSystemLog("[MQTT-TENANT] ERROR: Invalid update_tenant command - missing fields");
+        }
       }
     }
   }
@@ -2331,6 +2579,7 @@ bool mqttConnect() {
   if (!deviceClaimed) {
     if (millis() - lastMqttReconnect > 30000) {  // Warn every 30 seconds
       Serial.println("[MQTT] Device not claimed - cannot connect to MQTT");
+      addSystemLog("[MQTT] Device not claimed - skipping MQTT connect");
       lastMqttReconnect = millis();
     }
     return false;
@@ -2339,6 +2588,32 @@ bool mqttConnect() {
   // Don't retry too frequently
   if (millis() - lastMqttReconnect < 5000) return false;
   lastMqttReconnect = millis();
+
+  // DEBUG: Log credentials state
+  addSystemLog("[MQTT] Attempting connection...");
+  addSystemLog("[MQTT] Broker: " + claimedMqttBroker);
+  addSystemLog("[MQTT] Username: " + claimedMqttUsername);
+  addSystemLog("[MQTT] Password: " + String(claimedMqttPassword.length() > 0 ? "SET" : "EMPTY"));
+  addSystemLog("[MQTT] ClientId: " + claimedMqttClientId);
+
+  // DEBUG: Test raw TCP connection first
+  String broker = claimedMqttBroker;
+  if (broker.startsWith("mqtt://")) broker = broker.substring(7);
+  int colonPos = broker.indexOf(':');
+  if (colonPos > 0) broker = broker.substring(0, colonPos);
+
+  // Ensure the MQTT WiFiClient is in a clean state before connecting
+  WiFiClient& wifiClient = getMqttWifiClient();
+  if (wifiClient.connected()) {
+    addSystemLog("[MQTT] WiFiClient was connected, stopping...");
+    wifiClient.stop();
+    delay(100);  // Give time for cleanup
+  }
+  wifiClient.setTimeout(15000);  // 15 second timeout (milliseconds!)
+
+  // Don't pre-connect - let PubSubClient handle the connection
+  // Just verify the broker string is clean
+  addSystemLog("[MQTT] Using broker: " + broker);
 
   Serial.printf("[MQTT] Connecting to %s:%d...\n", claimedMqttBroker.c_str(), MQTT_PORT);
 
@@ -2369,6 +2644,18 @@ bool mqttConnect() {
   if (!connected) {
     int rc = mqttClient.state();
     Serial.printf("[MQTT] Connect failed, rc=%d\n", rc);
+    addSystemLog("[MQTT] Connect FAILED, rc=" + String(rc));
+    // PubSubClient state codes:
+    // -4: MQTT_CONNECTION_TIMEOUT
+    // -3: MQTT_CONNECTION_LOST
+    // -2: MQTT_CONNECT_FAILED
+    // -1: MQTT_DISCONNECTED
+    //  0: MQTT_CONNECTED
+    //  1: MQTT_CONNECT_BAD_PROTOCOL
+    //  2: MQTT_CONNECT_BAD_CLIENT_ID
+    //  3: MQTT_CONNECT_UNAVAILABLE
+    //  4: MQTT_CONNECT_BAD_CREDENTIALS
+    //  5: MQTT_CONNECT_UNAUTHORIZED
 
     // Mark as disconnected
     mqttReallyConnected = false;
@@ -2404,7 +2691,7 @@ bool mqttConnect() {
           Serial.println("[MQTT-AUTH] This was an intentional revocation, not a network issue");
           Serial.println("[MQTT-AUTH] ========================================");
           addSystemLog("[MQTT-AUTH] Server confirmed device revocation - unclaiming");
-          unclaimDevice();
+          unclaimDeviceWithSource("claim_verify");
         } else if (result == CLAIM_VERIFIED) {
           Serial.println("[MQTT-AUTH] ========================================");
           Serial.println("[MQTT-AUTH] Server confirms device is still claimed");
@@ -2488,20 +2775,40 @@ bool mqttConnect() {
   return true;
 }
 
+// Static broker string to persist beyond mqttSetup() scope
+// PubSubClient stores char* pointer, not a copy!
+static char mqttBrokerDomain[64] = {0};
+
 // MQTT setup (call in setup())
 void mqttSetup() {
   // Use claimed broker if available, otherwise default
-  const char* broker = deviceClaimed ? claimedMqttBroker.c_str() : MQTT_BROKER;
+  String brokerStr = deviceClaimed ? claimedMqttBroker : String(MQTT_BROKER);
 
-  mqttClient.setServer(broker, MQTT_PORT);
+  // Strip mqtt:// prefix and :port suffix if present (defensive parsing)
+  if (brokerStr.startsWith("mqtt://")) {
+    brokerStr = brokerStr.substring(7);  // Remove "mqtt://"
+  }
+  int colonPos = brokerStr.indexOf(':');
+  if (colonPos > 0) {
+    brokerStr = brokerStr.substring(0, colonPos);  // Remove ":port"
+  }
+
+  // Copy to static buffer so it persists (PubSubClient only stores pointer!)
+  strncpy(mqttBrokerDomain, brokerStr.c_str(), sizeof(mqttBrokerDomain) - 1);
+  mqttBrokerDomain[sizeof(mqttBrokerDomain) - 1] = '\0';
+
+  Serial.printf("[MQTT] Broker URL cleaned: '%s' -> '%s'\n",
+                claimedMqttBroker.c_str(), mqttBrokerDomain);
+
+  mqttClient.setServer(mqttBrokerDomain, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(51200);  // 50KB buffer for snapshot images (~30KB base64 + JSON)
 
   if (deviceClaimed) {
-    Serial.printf("[MQTT] Configured for %s:%d (Claimed Device)\n", broker, MQTT_PORT);
+    Serial.printf("[MQTT] Configured for %s:%d (Claimed Device)\n", brokerStr.c_str(), MQTT_PORT);
     Serial.printf("[MQTT] Tenant: %s, Device: %s\n", claimedTenantId.c_str(), claimedDeviceName.c_str());
   } else {
-    Serial.printf("[MQTT] Configured for %s:%d (UNCLAIMED - provisioning required)\n", broker, MQTT_PORT);
+    Serial.printf("[MQTT] Configured for %s:%d (UNCLAIMED - provisioning required)\n", brokerStr.c_str(), MQTT_PORT);
   }
 }
 
@@ -3504,7 +3811,7 @@ void performFactoryReset() {
   // Call unclaimDevice() if device was claimed (notifies server)
   if (deviceClaimed) {
     Serial.println("[FACTORY-RESET] Device was claimed, calling unclaimDevice()...");
-    unclaimDevice();
+    unclaimDeviceWithSource("factory_reset");
   } else {
     // Just clear the credentials directly if not claimed
     clearClaimedCredentials();
@@ -8348,11 +8655,13 @@ void setupEndpoints() {
   Serial.println("[DEBUG] setupEndpoints() ENTERED - first line of function");
   addSystemLog("[DEBUG] setupEndpoints() ENTERED - first line of function");
 
+  // Register root handler BEFORE SPA routes to ensure it takes precedence
+  server.on("/", HTTP_GET, protectHandler(handleRoot));
+
   registerSpaRoutes();
   // === PATCH START: SPA routes (fix redirect loop) ===
 
   // — your existing dynamic routes —
-  server.on("/", HTTP_GET, protectHandler(handleRoot));
   server.on("/data", HTTP_GET, protectHandler(handleData));
   server.on("/reset", HTTP_GET, protectHandler(handleReset));
   server.on("/settings", HTTP_GET, protectHandler(handleSettings));
@@ -8648,7 +8957,7 @@ void setupEndpoints() {
     Serial.println("[HTTP-UNCLAIM] HTTP response sent - initiating unclaim process...");
 
     // Unclaim device (will notify server if online)
-    unclaimDevice();
+    unclaimDeviceWithSource("local_ui");
   });
 
   // ============================================================================
@@ -8703,6 +9012,60 @@ void setupEndpoints() {
     Serial.printf("[WIFI-SCAN] Response: %s\n", json.c_str());
     req->send(200, "application/json", json);
   });
+
+  // ============================================================================
+  // WiFi Update Endpoint (for claimed devices that lost WiFi credentials)
+  // Updates WiFi credentials without affecting claim status
+  // ============================================================================
+  server.on("/api/wifi/update", HTTP_POST, [](AsyncWebServerRequest* req){}, NULL,
+    [](AsyncWebServerRequest* req, uint8_t *data, size_t len, size_t index, size_t total) {
+      Serial.println("[WIFI-UPDATE] === WiFi Update Request ===");
+      addSystemLog("[WIFI-UPDATE] Received request");
+
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, data, len);
+
+      if (error) {
+        Serial.printf("[WIFI-UPDATE] JSON parse error: %s\n", error.c_str());
+        req->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+        return;
+      }
+
+      String newSSID = doc["ssid"].as<String>();
+      String newPassword = doc["password"].as<String>();
+
+      if (newSSID.length() == 0) {
+        req->send(400, "application/json", "{\"success\":false,\"error\":\"SSID is required\"}");
+        return;
+      }
+
+      if (newPassword.length() < 8) {
+        req->send(400, "application/json", "{\"success\":false,\"error\":\"Password must be at least 8 characters\"}");
+        return;
+      }
+
+      Serial.printf("[WIFI-UPDATE] Updating WiFi to SSID: %s\n", newSSID.c_str());
+      addSystemLog("[WIFI-UPDATE] Updating WiFi to: " + newSSID);
+
+      // Save WiFi credentials (does NOT affect claim status)
+      saveWiFiCredentials(newSSID, newPassword);
+
+      JsonDocument response;
+      response["success"] = true;
+      response["message"] = "WiFi credentials updated. Device will restart and connect.";
+
+      String json;
+      serializeJson(response, json);
+      req->send(200, "application/json", json);
+
+      Serial.println("[WIFI-UPDATE] Credentials saved, rebooting in 1 second...");
+      addSystemLog("[WIFI-UPDATE] Rebooting to apply new WiFi...");
+
+      // Restart device to apply new WiFi settings
+      delay(1000);
+      ESP.restart();
+    }
+  );
 
   // ============================================================================
   // Setup Connect Endpoint (for Captive Portal - handles full setup flow)
@@ -8832,6 +9195,78 @@ void setupEndpoints() {
       }
     }
   );
+
+  // ============================================================================
+  // DEBUG: Direct registration endpoint (bypasses WiFi reconnect)
+  // ============================================================================
+  server.on("/api/debug/register", HTTP_POST, [](AsyncWebServerRequest* req){}, NULL,
+    [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+      if (index == 0) req->_tempObject = (void*)new String();
+      String* body = (String*)req->_tempObject;
+      body->concat((char*)data, len);
+
+      if (index + len == total) {
+        addSystemLog("[DEBUG-REGISTER] === DIRECT REGISTRATION TEST ===");
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, *body);
+        delete body;
+        req->_tempObject = nullptr;
+
+        if (err) {
+          req->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+          return;
+        }
+
+        String email = doc["email"] | "";
+        String accountPassword = doc["accountPassword"] | "";
+        String deviceName = doc["deviceName"] | "";
+        bool isNewAccount = doc["isNewAccount"] | false;  // Default to sign-in for debug
+
+        addSystemLog("[DEBUG-REGISTER] Email: " + email);
+        addSystemLog("[DEBUG-REGISTER] Device: " + deviceName);
+        addSystemLog("[DEBUG-REGISTER] isNewAccount: " + String(isNewAccount ? "true" : "false"));
+
+        if (email.isEmpty() || deviceName.isEmpty()) {
+          req->send(400, "application/json",
+            "{\"success\":false,\"error\":\"Missing email or deviceName\"}");
+          return;
+        }
+
+        // Directly call registerAndClaimDevice
+        addSystemLog("[DEBUG-REGISTER] Calling registerAndClaimDevice()...");
+        bool result = registerAndClaimDevice(email, accountPassword, deviceName, isNewAccount);
+
+        JsonDocument response;
+        response["success"] = result;
+        response["message"] = result ? "Registration successful" : "Registration failed - check logs";
+        String json;
+        serializeJson(response, json);
+        req->send(200, "application/json", json);
+      }
+    }
+  );
+
+  // ============================================================================
+  // DEBUG: MQTT credentials endpoint (for debugging auth issues)
+  // ============================================================================
+  server.on("/api/debug/mqtt-creds", HTTP_GET, [](AsyncWebServerRequest* req) {
+    // Basic auth check
+    if (!req->authenticate("ops", "changeme")) {
+      return req->requestAuthentication();
+    }
+
+    JsonDocument doc;
+    doc["broker"] = claimedMqttBroker;
+    doc["username"] = claimedMqttUsername;
+    doc["password"] = claimedMqttPassword;  // WARNING: Sensitive! Remove in production
+    doc["clientId"] = claimedMqttClientId;
+    doc["deviceClaimed"] = deviceClaimed;
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
 
   // ============================================================================
   // Device Claim/Unclaim Page
@@ -10258,10 +10693,23 @@ void setup() {
 
     // Use AP_STA mode to allow WiFi scanning while in AP mode
     WiFi.mode(WIFI_AP_STA);  // AP+STA mode for scanning capability
-    String apName = "MouseTrap-" + lastMacOctet;
-    WiFi.softAP(apName.c_str());
+    delay(100);  // Let WiFi mode settle
 
-    IPAddress apIP = WiFi.softAPIP();
+    String apName = "MouseTrap-" + lastMacOctet;
+
+    // Configure AP IP explicitly before starting
+    IPAddress apIP(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    WiFi.softAPConfig(apIP, gateway, subnet);
+
+    bool apStarted = WiFi.softAP(apName.c_str());
+    if (!apStarted) {
+      Serial.println("[AP MODE] ERROR: softAP() returned false!");
+      addSystemLog("[AP MODE] ERROR: Failed to start AP!");
+    }
+
+    apIP = WiFi.softAPIP();
     Serial.print("[AP MODE] Access Point started: ");
     Serial.println(apName);
     Serial.print("[AP MODE] IP address: ");
@@ -10783,15 +11231,14 @@ void processPendingSetup() {
   addSystemLog("[SETUP] Device: " + pendingSetupDeviceName);
   addSystemLog("[SETUP] NewAccount: " + String(pendingSetupIsNewAccount ? "true" : "false"));
 
-  // ===== STEP 2: Switch to AP+STA mode (keep AP running while connecting to WiFi) =====
-  addSystemLog("[SETUP] Step 2: Switching to AP+STA mode...");
-  WiFi.mode(WIFI_AP_STA);
-  // Restart AP with same SSID after mode change
-  String macSuffix = g_macUpper.substring(g_macUpper.length() - 5);
-  macSuffix.replace(":", "");
-  String apName = "MouseTrap-" + macSuffix;
-  WiFi.softAP(apName.c_str());
-  addSystemLog("[SETUP] Step 2 OK: AP restarted as " + apName + " while connecting to WiFi");
+  // ===== STEP 2: Shut down AP and switch to STA-only mode =====
+  // AP+STA mode causes networking issues on ESP32-S3, so we fully disconnect AP first
+  addSystemLog("[SETUP] Step 2: Shutting down AP and switching to STA mode...");
+  WiFi.softAPdisconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  delay(500);  // Allow mode switch to settle
+  addSystemLog("[SETUP] Step 2 OK: Now in STA-only mode");
 
   // ===== STEP 3: Connect to WiFi =====
   addSystemLog("[SETUP] Step 3: Connecting to WiFi...");
@@ -10814,6 +11261,11 @@ void processPendingSetup() {
 
   addSystemLog("[SETUP] Step 3 OK: WiFi connected");
   addSystemLog("[SETUP] IP Address: " + WiFi.localIP().toString());
+
+  // Give WiFi stack time to fully initialize (DHCP, routes, etc.)
+  addSystemLog("[SETUP] Step 3.5: Waiting for network stack to stabilize...");
+  delay(3000);
+  addSystemLog("[SETUP] Step 3.5 OK: Network should be stable");
 
   // ===== STEP 4: Sync NTP time =====
   addSystemLog("[SETUP] Step 4: Syncing NTP time...");
@@ -10848,6 +11300,45 @@ void processPendingSetup() {
   addSystemLog("[SETUP] Step 5 OK: MAC=" + String(creds.mac) + ", timestamp=" + String(creds.timestamp));
 
   // ===== STEP 6: Call server =====
+  // Test connectivity first
+  addSystemLog("[SETUP] Step 5.6: Testing connectivity...");
+  addSystemLog("[SETUP] Gateway: " + WiFi.gatewayIP().toString());
+  addSystemLog("[SETUP] DNS: " + WiFi.dnsIP().toString());
+  addSystemLog("[SETUP] Local IP: " + WiFi.localIP().toString());
+  addSystemLog("[SETUP] WiFi status: " + String(WiFi.status()));
+
+  // Test internet HTTP first
+  HTTPClient inetHttp;
+  inetHttp.begin("http://httpbin.org/ip");
+  inetHttp.setTimeout(5000);
+  int inetCode = inetHttp.GET();
+  addSystemLog("[SETUP] Step 5.6a: Internet HTTP test: " + String(inetCode));
+  if (inetCode > 0) {
+    addSystemLog("[SETUP] Step 5.6a: Response: " + inetHttp.getString().substring(0, 50));
+  }
+  inetHttp.end();
+
+  // Test raw TCP connection to local server
+  WiFiClient tcpTest;
+  addSystemLog("[SETUP] Step 5.6b: Testing TCP to 192.168.133.110:4000...");
+  if (tcpTest.connect("192.168.133.110", 4000)) {
+    addSystemLog("[SETUP] Step 5.6b: TCP connect SUCCESS!");
+    tcpTest.stop();
+  } else {
+    addSystemLog("[SETUP] Step 5.6b: TCP connect FAILED");
+  }
+
+  // Test local server health endpoint
+  HTTPClient testHttp;
+  testHttp.begin("http://192.168.133.110:4000/health");
+  testHttp.setTimeout(5000);
+  int testCode = testHttp.GET();
+  addSystemLog("[SETUP] Step 5.6c: Local health check: " + String(testCode));
+  if (testCode > 0) {
+    addSystemLog("[SETUP] Step 5.6c: Response: " + testHttp.getString());
+  }
+  testHttp.end();
+
   String url = String(CLAIM_SERVER_URL) + "/api/setup/register-and-claim";
   addSystemLog("[SETUP] Step 6: Calling server...");
   addSystemLog("[SETUP] URL: " + url);

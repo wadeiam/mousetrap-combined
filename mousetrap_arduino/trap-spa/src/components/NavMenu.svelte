@@ -9,7 +9,7 @@
   // Auto-expand based on current route
   $: {
     const path = $currentRoute;
-    settingsExpanded = path.startsWith('/servo') || path.startsWith('/calibration') || path.startsWith('/settings');
+    settingsExpanded = path.startsWith('/servo') || path.startsWith('/calibration') || path.startsWith('/settings') || path.startsWith('/wifi');
     logsExpanded = path.startsWith('/logs') || path.startsWith('/status') || path.startsWith('/gallery');
     maintenanceExpanded = path.startsWith('/claim') || path.startsWith('/test') || path.startsWith('/firmware') || path.startsWith('/reboot');
   }
@@ -38,6 +38,9 @@
   </a>
   {#if settingsExpanded}
     <div class="submenu">
+      <a href="#/wifi" use:link on:click={closeMenu} class:active={$currentRoute === '/wifi'}>
+        WiFi Settings
+      </a>
       <a href="#/servo" use:link on:click={closeMenu} class:active={$currentRoute === '/servo'}>
         Servo Settings
       </a>

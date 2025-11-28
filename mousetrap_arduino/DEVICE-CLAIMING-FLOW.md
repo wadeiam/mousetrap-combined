@@ -326,13 +326,127 @@ When user holds button for 10 seconds:
    - Clear WiFi credentials from NVS
    - Clear device claim status (deviceClaimed = false)
    - Clear MQTT credentials from NVS
-   - Notify server of unclaim (if connected)
+   - Notify server of unclaim with source: `factory_reset` (if connected)
    - Restart into AP mode
 
 3. **Post-Reset State:**
    - Device broadcasts `MouseTrap-XXXX` AP
    - Captive portal ready for new setup
    - Can be claimed by same or different tenant
+
+---
+
+## Bulletproof Unclaim System (Token Verification)
+
+**Added:** 2025-11-27
+
+To prevent accidental unclaims from network issues or malformed messages, all server-initiated unclaims now require **token verification**.
+
+### Why Token Verification?
+
+**Previous Problem:** Devices could unclaim unexpectedly due to:
+- Network glitches causing malformed MQTT messages
+- Server errors returning wrong claim status
+- Retained MQTT messages from previous unclaims
+
+**Solution:** Device MUST verify unclaim request with server via HTTP before unclaiming.
+
+### Token-Verified Unclaim Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     TOKEN-VERIFIED REVOCATION                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Dashboard              Server                    Device                 │
+│     │                     │                         │                    │
+│     │ Click "Unclaim"     │                         │                    │
+│     │────────────────────►│                         │                    │
+│     │                     │                         │                    │
+│     │                     │ 1. Generate token       │                    │
+│     │                     │    (64 hex chars)       │                    │
+│     │                     │    expires in 5 min     │                    │
+│     │                     │                         │                    │
+│     │                     │ 2. Store in memory      │                    │
+│     │                     │    revocationTokens     │                    │
+│     │                     │    Map                  │                    │
+│     │                     │                         │                    │
+│     │                     │ 3. MQTT /revoke         │                    │
+│     │                     │    {action, token}      │                    │
+│     │                     │────────────────────────►│                    │
+│     │                     │                         │                    │
+│     │                     │                         │ 4. Extract token   │
+│     │                     │                         │                    │
+│     │                     │ POST /verify-revocation │ 5. Verify via HTTP │
+│     │                     │◄────────────────────────│                    │
+│     │                     │                         │                    │
+│     │                     │ 6. Check:               │                    │
+│     │                     │    - Token exists?      │                    │
+│     │                     │    - Not expired?       │                    │
+│     │                     │    - MAC matches?       │                    │
+│     │                     │                         │                    │
+│     │                     │ 7. Delete token         │                    │
+│     │                     │    (one-time use)       │                    │
+│     │                     │                         │                    │
+│     │                     │ {valid: true}           │                    │
+│     │                     │────────────────────────►│                    │
+│     │                     │                         │                    │
+│     │                     │                         │ 8. ONLY NOW:       │
+│     │                     │                         │    Unclaim device  │
+│     │                     │                         │                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Security Guarantees
+
+| Error Condition | Device Behavior |
+|-----------------|-----------------|
+| WiFi disconnected | **STAYS CLAIMED** |
+| Server unreachable | **STAYS CLAIMED** |
+| HTTP timeout | **STAYS CLAIMED** |
+| Invalid token | **STAYS CLAIMED** |
+| Expired token | **STAYS CLAIMED** |
+| MAC mismatch | **STAYS CLAIMED** |
+| Server 500 error | **STAYS CLAIMED** |
+| JSON parse error | **STAYS CLAIMED** |
+
+### Hardened Claim-Status Endpoint
+
+The `/api/device/claim-status` endpoint is hardened to prevent false unclaims:
+
+| Response | Meaning | Device Action |
+|----------|---------|---------------|
+| 200 `{claimed: true}` | Device is claimed | Stay claimed |
+| 200 `{claimed: false}` | Device explicitly revoked | This NEVER happens anymore |
+| 410 Gone | Device explicitly revoked | Unclaim |
+| 404 Not Found | Device not in database | **STAY CLAIMED** (might be DB sync issue) |
+| 500 Server Error | Server problem | **STAY CLAIMED** |
+
+**Critical Change:** Returns 404 instead of `{claimed: false}` when device not found, preventing accidental unclaims from database issues.
+
+### Audit Trail
+
+All claim/unclaim operations are logged to `device_claim_audit` table:
+
+| Field | Description |
+|-------|-------------|
+| `action` | `unclaim`, `claim`, `move`, `reclaim` |
+| `trigger_source` | `admin_dashboard`, `device_factory_reset`, `device_local_ui`, `mqtt_revoke`, `claim_verify` |
+| `actor_user_id` | Dashboard user ID (NULL for device-initiated) |
+| `actor_ip` | IP address of requester |
+| `reason` | Human-readable description |
+
+### Code Locations
+
+**Firmware:**
+- `verifyRevocationToken()`: `mousetrap_arduino.ino:1403-1478`
+- `unclaimDeviceWithSource()`: `mousetrap_arduino.ino:1577-1664`
+- MQTT revoke handler: `mousetrap_arduino.ino:2430-2466`
+
+**Server:**
+- Token generation: `devices.routes.ts` `/devices/:id/unclaim`
+- Token verification: `claim.routes.ts` `/device/verify-revocation`
+- Token store: `revocationTokens` Map with auto-cleanup
 
 ---
 

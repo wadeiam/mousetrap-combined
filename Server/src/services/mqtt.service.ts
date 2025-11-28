@@ -398,6 +398,16 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       // Emit device online/offline events
       if (status.online) {
         this.emit('device:online', { tenantId, macAddress: macAddress.toUpperCase() });
+
+        // Clear any retained revoke message for this device
+        // This prevents newly claimed devices from receiving old revoke messages
+        // from previous unclaims when they reconnect
+        try {
+          await this.clearDeviceRevocation(tenantId, macAddress);
+        } catch (clearError) {
+          // Log but don't fail - this is a preventive measure
+          console.warn(`[MQTT] Could not clear retained revoke message for ${macAddress}:`, clearError);
+        }
       } else {
         this.emit('device:offline', { tenantId, macAddress: macAddress.toUpperCase() });
       }
@@ -835,25 +845,53 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
   /**
    * Public publish method for device revocation
+   *
+   * SECURITY: The token parameter is required for devices to verify the revocation.
+   * Devices should call /api/device/verify-revocation to validate the token
+   * before actually unclaiming. This prevents accidental unclaims from network
+   * issues or malformed messages.
    */
   public async publishDeviceRevocation(
     tenantId: string,
     mqttClientId: string,
-    reason: string = 'Admin unclaimed device'
+    reason: string = 'Admin unclaimed device',
+    token: string  // Required token for device verification
   ): Promise<void> {
     const topic = `tenant/${tenantId}/device/${mqttClientId}/revoke`;
     const message = {
       action: 'revoke',
-      timestamp: new Date().toISOString(),
+      token,  // Device must verify this token before unclaiming
+      timestamp: Date.now(),
       reason,
     };
 
-    await this.publish(topic, message, { qos: 1, retain: true });
-    console.log(`[MQTT] Published device revocation to ${topic}`);
+    // NOTE: Using retain: false to prevent issues with re-claimed devices
+    // receiving old revoke messages. The device also checks claim status via HTTP.
+    await this.publish(topic, message, { qos: 1, retain: false });
+    console.log(`[MQTT] Published device revocation to ${topic} (with verification token)`);
     logger.info('Device revocation published', {
       tenantId,
       mqttClientId,
       reason,
+      hasToken: true,
+    });
+  }
+
+  /**
+   * Clear any retained revoke message for a device
+   * This should be called when a device is successfully claimed to prevent
+   * the device from receiving old revoke messages from previous unclaims
+   */
+  public async clearDeviceRevocation(
+    tenantId: string,
+    mqttClientId: string
+  ): Promise<void> {
+    const topic = `tenant/${tenantId}/device/${mqttClientId}/revoke`;
+    await this.clearRetainedMessage(topic);
+    console.log(`[MQTT] Cleared retained revoke message for device ${mqttClientId}`);
+    logger.info('Device revocation cleared', {
+      tenantId,
+      mqttClientId,
     });
   }
 

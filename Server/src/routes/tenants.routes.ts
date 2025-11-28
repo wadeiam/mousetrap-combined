@@ -17,19 +17,44 @@ router.use((req: AuthRequest, _res: Response, next) => {
 });
 
 // GET /tenants - List all tenants the user has access to
+// Superadmins (in Master Tenant) can see ALL tenants
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.userId;
 
-    // Get tenants for the user via user_tenant_memberships table
-    const result = await dbPool.query(
-      `SELECT t.id, t.name, t.created_at, t.updated_at, utm.role
-       FROM tenants t
-       INNER JOIN user_tenant_memberships utm ON utm.tenant_id = t.id
-       WHERE utm.user_id = $1
-       ORDER BY t.name ASC`,
+    // Check if user is a superadmin in the Master Tenant
+    const superadminCheck = await dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1
+         AND tenant_id = '00000000-0000-0000-0000-000000000001'
+         AND role = 'superadmin'`,
       [userId]
     );
+    const isSuperadmin = superadminCheck.rows.length > 0;
+
+    let result;
+    if (isSuperadmin) {
+      // Superadmins see ALL active tenants (not soft-deleted) with superadmin role
+      result = await dbPool.query(
+        `SELECT t.id, t.name, t.created_at, t.updated_at,
+                COALESCE(utm.role, 'superadmin') as role
+         FROM tenants t
+         LEFT JOIN user_tenant_memberships utm ON utm.tenant_id = t.id AND utm.user_id = $1
+         WHERE t.deleted_at IS NULL
+         ORDER BY t.name ASC`,
+        [userId]
+      );
+    } else {
+      // Regular users only see tenants they have explicit membership in (and not soft-deleted)
+      result = await dbPool.query(
+        `SELECT t.id, t.name, t.created_at, t.updated_at, utm.role
+         FROM tenants t
+         INNER JOIN user_tenant_memberships utm ON utm.tenant_id = t.id
+         WHERE utm.user_id = $1 AND t.deleted_at IS NULL
+         ORDER BY t.name ASC`,
+        [userId]
+      );
+    }
 
     // Transform to camelCase for frontend
     const tenants = result.rows.map(row => ({
@@ -54,19 +79,41 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // GET /tenants/:id - Get a specific tenant by ID
+// Superadmins have implicit access to all tenants
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.userId;
 
-    // Verify user has access to this tenant via user_tenant_memberships
-    const result = await dbPool.query(
-      `SELECT t.id, t.name, t.created_at, t.updated_at, utm.role
-       FROM tenants t
-       INNER JOIN user_tenant_memberships utm ON utm.tenant_id = t.id
-       WHERE t.id = $1 AND utm.user_id = $2`,
-      [id, userId]
+    // Check if user is a superadmin in the Master Tenant
+    const superadminCheck = await dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1
+         AND tenant_id = '00000000-0000-0000-0000-000000000001'
+         AND role = 'superadmin'`,
+      [userId]
     );
+    const isSuperadmin = superadminCheck.rows.length > 0;
+
+    let result;
+    if (isSuperadmin) {
+      // Superadmins can access any active tenant
+      result = await dbPool.query(
+        `SELECT t.id, t.name, t.created_at, t.updated_at, 'superadmin' as role
+         FROM tenants t
+         WHERE t.id = $1 AND t.deleted_at IS NULL`,
+        [id]
+      );
+    } else {
+      // Regular users need explicit membership
+      result = await dbPool.query(
+        `SELECT t.id, t.name, t.created_at, t.updated_at, utm.role
+         FROM tenants t
+         INNER JOIN user_tenant_memberships utm ON utm.tenant_id = t.id
+         WHERE t.id = $1 AND utm.user_id = $2 AND t.deleted_at IS NULL`,
+        [id, userId]
+      );
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -238,18 +285,30 @@ router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const userId = req.user!.userId;
 
-    // Verify user has access to this tenant via user_tenant_memberships
-    const accessCheck = await dbPool.query(
+    // Check if user is a superadmin in the Master Tenant
+    const superadminCheck = await dbPool.query(
       `SELECT 1 FROM user_tenant_memberships
-       WHERE user_id = $1 AND tenant_id = $2`,
-      [userId, id]
+       WHERE user_id = $1
+         AND tenant_id = '00000000-0000-0000-0000-000000000001'
+         AND role = 'superadmin'`,
+      [userId]
     );
+    const isSuperadmin = superadminCheck.rows.length > 0;
 
-    if (accessCheck.rows.length === 0) {
-      return res.status(403).json({
-        success: false,
-        error: 'Access denied to this tenant',
-      });
+    // If not superadmin, verify user has access to this tenant via membership
+    if (!isSuperadmin) {
+      const accessCheck = await dbPool.query(
+        `SELECT 1 FROM user_tenant_memberships
+         WHERE user_id = $1 AND tenant_id = $2`,
+        [userId, id]
+      );
+
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied to this tenant',
+        });
+      }
     }
 
     // Get user count for this tenant
@@ -280,11 +339,14 @@ router.get('/:id/stats', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// DELETE /tenants/:id - Delete a tenant (superadmin only)
+// DELETE /tenants/:id - Soft-delete a tenant (superadmin only)
+// Query params:
+//   - force=true: Force delete tenant even with devices (soft-deletes devices too)
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.userId;
+    const forceDelete = req.query.force === 'true';
 
     // Prevent deletion of Master Tenant
     if (id === '00000000-0000-0000-0000-000000000001') {
@@ -307,37 +369,75 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if tenant has any devices
-    const deviceCheck = await dbPool.query(
-      `SELECT COUNT(*) as device_count FROM devices WHERE tenant_id = $1`,
+    // Check if tenant exists and is not already deleted
+    const tenantCheck = await dbPool.query(
+      `SELECT id, name, deleted_at FROM tenants WHERE id = $1`,
       [id]
     );
 
-    if (parseInt(deviceCheck.rows[0].device_count) > 0) {
-      return res.status(409).json({
-        success: false,
-        error: 'Cannot delete tenant with existing devices. Please reassign or delete devices first.',
-      });
-    }
-
-    // Delete the tenant (CASCADE will handle user_tenant_memberships)
-    const result = await dbPool.query(
-      `DELETE FROM tenants WHERE id = $1 RETURNING id, name`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
+    if (tenantCheck.rows.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Tenant not found',
       });
     }
 
+    if (tenantCheck.rows[0].deleted_at) {
+      return res.status(409).json({
+        success: false,
+        error: 'Tenant is already deleted',
+      });
+    }
+
+    // Check if tenant has any devices
+    const deviceCheck = await dbPool.query(
+      `SELECT COUNT(*) as device_count FROM devices WHERE tenant_id = $1 AND unclaimed_at IS NULL`,
+      [id]
+    );
+    const deviceCount = parseInt(deviceCheck.rows[0].device_count);
+
+    if (deviceCount > 0 && !forceDelete) {
+      return res.status(409).json({
+        success: false,
+        error: `Cannot delete tenant with ${deviceCount} active device(s). Use force=true to soft-delete tenant and all associated devices.`,
+        deviceCount,
+        requiresForce: true,
+      });
+    }
+
+    // If force delete, soft-delete all devices first
+    if (deviceCount > 0 && forceDelete) {
+      await dbPool.query(
+        `UPDATE devices SET unclaimed_at = NOW() WHERE tenant_id = $1 AND unclaimed_at IS NULL`,
+        [id]
+      );
+    }
+
+    // Soft-delete the tenant
+    const result = await dbPool.query(
+      `UPDATE tenants SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING id, name, deleted_at`,
+      [id]
+    );
+
+    // Get purge retention setting
+    const retentionResult = await dbPool.query(
+      `SELECT value FROM system_settings WHERE key = 'tenant_purge_retention_days'`
+    );
+    const retentionDays = retentionResult.rows.length > 0
+      ? parseInt(JSON.parse(retentionResult.rows[0].value))
+      : 90;
+
+    const purgeDate = new Date(result.rows[0].deleted_at);
+    purgeDate.setDate(purgeDate.getDate() + retentionDays);
+
     res.json({
       success: true,
       data: {
-        message: `Tenant "${result.rows[0].name}" deleted successfully`,
+        message: `Tenant "${result.rows[0].name}" has been soft-deleted`,
         deletedTenant: result.rows[0],
+        devicesDeleted: forceDelete ? deviceCount : 0,
+        purgeDate: purgeDate.toISOString(),
+        retentionDays,
       },
     });
   } catch (error: any) {

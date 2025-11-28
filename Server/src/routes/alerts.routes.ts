@@ -29,6 +29,18 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const isAcknowledged = req.query.isAcknowledged as string;
     const isResolved = req.query.isResolved as string;
     const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+
+    // Check if user is a Master Tenant superadmin (sees all alerts)
+    const MASTER_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+    const superadminCheck = await dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1
+         AND tenant_id = $2
+         AND role = 'superadmin'`,
+      [userId, MASTER_TENANT_ID]
+    );
+    const isMasterTenantAdmin = superadminCheck.rows.length > 0;
 
     let query = `
       SELECT
@@ -38,12 +50,23 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         a.created_at, a.updated_at,
         a.mac_address, a.location, a.label,
         (a.alert_status = 'acknowledged' OR a.alert_status = 'resolved') as "isAcknowledged",
-        (a.alert_status = 'resolved') as "isResolved"
+        (a.alert_status = 'resolved') as "isResolved",
+        t.name as tenant_name
       FROM device_alerts a
-      WHERE a.tenant_id = $1
+      LEFT JOIN tenants t ON a.tenant_id = t.id
+      WHERE 1=1
     `;
-    const params: any[] = [tenantId];
-    let paramIndex = 2;
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    // Master Tenant superadmins see all alerts ONLY when viewing the Master Tenant
+    // When they switch to a subtenant, they should see only that tenant's alerts
+    const isViewingMasterTenant = tenantId === MASTER_TENANT_ID;
+    if (!(isMasterTenantAdmin && isViewingMasterTenant)) {
+      query += ` AND a.tenant_id = $${paramIndex}`;
+      params.push(tenantId);
+      paramIndex++;
+    }
 
     // Filter by severity
     if (severity) {
@@ -101,6 +124,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       id: row.id,
       deviceId: row.device_id,
       tenantId: row.tenant_id,
+      tenantName: row.tenant_name,
       type: row.alert_type,
       severity: row.severity,
       message: row.message,
@@ -112,6 +136,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       resolvedAt: row.resolved_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      macAddress: row.mac_address,
+      location: row.location,
+      label: row.label,
     }));
 
     res.json({

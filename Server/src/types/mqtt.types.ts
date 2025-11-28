@@ -81,7 +81,7 @@ export interface FilesystemUpdateMessage {
  * Published: When server needs device to perform action
  */
 export interface DeviceCommandMessage {
-  command: 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert' | 'ota_update' | 'capture_snapshot';
+  command: 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert' | 'ota_update' | 'capture_snapshot' | 'update_tenant';
   params?: Record<string, any>;  // Command-specific parameters
   timestamp?: number;            // Unix timestamp (ms)
   requestId?: string;            // For tracking command execution
@@ -91,6 +91,10 @@ export interface DeviceCommandMessage {
   url?: string;
   size?: number;
   sha256?: string;
+  // Tenant move fields (when command is 'update_tenant')
+  tenantId?: string;             // New tenant ID
+  deviceId?: string;             // Device ID (usually unchanged)
+  deviceName?: string;           // Device name (usually unchanged)
 }
 
 // ============================================================================

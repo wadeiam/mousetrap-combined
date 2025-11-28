@@ -2,8 +2,57 @@ import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
+import mqtt from 'mqtt';
 import { syncMqttDevice } from '../utils/mqtt-auth';
 import Bonjour from 'bonjour-service';
+import { revocationTokens } from './devices.routes';
+
+/**
+ * Clear any retained revoke message for a device on the MQTT broker.
+ * This prevents newly claimed devices from receiving old revoke messages
+ * from previous unclaims.
+ */
+async function clearRetainedRevokeMessage(tenantId: string, mqttClientId: string): Promise<void> {
+  const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
+  const topic = `tenant/${tenantId}/device/${mqttClientId}/revoke`;
+
+  return new Promise((resolve, reject) => {
+    const client = mqtt.connect(brokerUrl, {
+      clientId: `claim_clear_${Date.now()}`,
+      clean: true,
+      connectTimeout: 5000,
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
+    });
+
+    const timeout = setTimeout(() => {
+      client.end(true);
+      reject(new Error('MQTT connection timeout'));
+    }, 10000);
+
+    client.on('connect', () => {
+      // Publish empty retained message to clear the old one
+      client.publish(topic, '', { qos: 1, retain: true }, (err) => {
+        clearTimeout(timeout);
+        client.end();
+        if (err) {
+          console.error(`[CLAIM] Failed to clear retained revoke message: ${err.message}`);
+          reject(err);
+        } else {
+          console.log(`[CLAIM] Cleared retained revoke message on ${topic}`);
+          resolve();
+        }
+      });
+    });
+
+    client.on('error', (err) => {
+      clearTimeout(timeout);
+      client.end(true);
+      console.error(`[CLAIM] MQTT error clearing revoke message: ${err.message}`);
+      reject(err);
+    });
+  });
+}
 
 const router = Router();
 
@@ -160,6 +209,14 @@ router.post('/devices/claim', async (req: Request, res: Response) => {
       [deviceInfo.macAddress]
     );
     console.log('[CLAIM] Device removed from claiming queue');
+
+    // 7.5. Clear any retained revoke message for this device
+    try {
+      await clearRetainedRevokeMessage(code.tenant_id, mqttClientId);
+    } catch (clearError: any) {
+      // Log but don't fail - this is a preventive measure
+      console.warn('[CLAIM] Could not clear retained revoke message:', clearError.message);
+    }
 
     // 8. Return credentials to device
     const response = {
@@ -405,6 +462,11 @@ router.get('/admin/devices', async (req: Request, res: Response) => {
 
 // ============================================================================
 // GET /device/claim-status - Check if device is claimed (NO AUTH REQUIRED)
+//
+// SECURITY HARDENING: This endpoint is critical for device claim integrity.
+// - Return 404 if device not found (device should stay claimed)
+// - Return 410 ONLY if device has explicit unclaimed_at timestamp
+// - Never return claimed:false unless explicitly revoked
 // ============================================================================
 router.get('/device/claim-status', async (req: Request, res: Response) => {
   try {
@@ -420,26 +482,32 @@ router.get('/device/claim-status', async (req: Request, res: Response) => {
     console.log('[CLAIM-STATUS] Checking claim status for MAC:', mac);
 
     // Look up device by MAC address (converted to mqtt_client_id format)
-    const mqttClientId = String(mac).replace(/:/g, '');
+    const mqttClientId = String(mac).replace(/:/g, '').toUpperCase();
     const result = await dbPool.query(
       'SELECT id, name, unclaimed_at FROM devices WHERE mqtt_client_id = $1',
       [mqttClientId]
     );
 
     if (result.rows.length === 0) {
-      console.log('[CLAIM-STATUS] Device not found in database');
-      return res.json({
-        success: true,
-        claimed: false,
+      // CRITICAL SECURITY FIX: Do NOT return claimed:false when device not found!
+      // This could be a database sync issue or new device.
+      // Device should interpret 404 as "keep current state" (stay claimed).
+      console.log('[CLAIM-STATUS] Device not found in database - returning 404 (device should stay claimed)');
+      return res.status(404).json({
+        success: false,
+        error: 'Device not found',
+        // Device should interpret this as "unknown state, keep credentials"
       });
     }
 
     const device = result.rows[0];
 
-    // Check if device has been revoked (unclaimed_at is NOT NULL)
+    // Check if device has been EXPLICITLY revoked (unclaimed_at is NOT NULL)
     if (device.unclaimed_at !== null) {
-      console.log('[CLAIM-STATUS] Device has been revoked:', device.unclaimed_at);
+      // This is the ONLY case where we tell device it's revoked
+      console.log('[CLAIM-STATUS] Device has been EXPLICITLY revoked:', device.unclaimed_at);
       return res.status(410).json({
+        success: true,
         claimed: false,
         message: 'Device has been revoked',
         revokedAt: device.unclaimed_at,
@@ -454,6 +522,7 @@ router.get('/device/claim-status', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('[CLAIM-STATUS] Error checking claim status:', error);
+    // On server error, return 500 - device should stay claimed
     res.status(500).json({
       success: false,
       error: 'Server error checking claim status',
@@ -462,11 +531,92 @@ router.get('/device/claim-status', async (req: Request, res: Response) => {
 });
 
 // ============================================================================
+// POST /device/verify-revocation - Verify revocation token (NO AUTH REQUIRED)
+//
+// Called by devices when they receive an MQTT /revoke message.
+// Device MUST verify the token before actually unclaiming.
+// This prevents accidental unclaims from network issues or malformed messages.
+// ============================================================================
+router.post('/device/verify-revocation', async (req: Request, res: Response) => {
+  try {
+    const { mac, token } = req.body;
+    const clientIP = req.ip || req.socket?.remoteAddress || 'unknown';
+
+    console.log('[VERIFY-REVOKE] ========================================');
+    console.log('[VERIFY-REVOKE] Token verification request');
+    console.log('[VERIFY-REVOKE] MAC:', mac);
+    console.log('[VERIFY-REVOKE] Client IP:', clientIP);
+
+    if (!mac || !token) {
+      console.log('[VERIFY-REVOKE] REJECTED: Missing mac or token');
+      return res.json({
+        valid: false,
+        reason: 'missing_params',
+      });
+    }
+
+    const mqttClientId = String(mac).replace(/:/g, '').toUpperCase();
+
+    // Look up the token
+    const tokenData = revocationTokens.get(token);
+
+    if (!tokenData) {
+      console.log('[VERIFY-REVOKE] REJECTED: Token not found');
+      return res.json({
+        valid: false,
+        reason: 'invalid_token',
+      });
+    }
+
+    // Check if token is expired
+    if (Date.now() > tokenData.expires) {
+      revocationTokens.delete(token);
+      console.log('[VERIFY-REVOKE] REJECTED: Token expired');
+      return res.json({
+        valid: false,
+        reason: 'token_expired',
+      });
+    }
+
+    // Check if token matches this device
+    if (tokenData.mqttClientId !== mqttClientId) {
+      console.log('[VERIFY-REVOKE] REJECTED: Token device mismatch');
+      console.log('[VERIFY-REVOKE]   Expected:', tokenData.mqttClientId);
+      console.log('[VERIFY-REVOKE]   Got:', mqttClientId);
+      return res.json({
+        valid: false,
+        reason: 'device_mismatch',
+      });
+    }
+
+    // Token is valid - delete it (one-time use)
+    revocationTokens.delete(token);
+
+    console.log('[VERIFY-REVOKE] ✓ TOKEN VALID');
+    console.log('[VERIFY-REVOKE] Device:', mqttClientId);
+    console.log('[VERIFY-REVOKE] Revocation authorized');
+    console.log('[VERIFY-REVOKE] ========================================');
+
+    return res.json({
+      valid: true,
+    });
+  } catch (error: any) {
+    console.error('[VERIFY-REVOKE] Error verifying token:', error);
+    // On error, reject the revocation (device stays claimed)
+    return res.json({
+      valid: false,
+      reason: 'server_error',
+    });
+  }
+});
+
+// ============================================================================
 // POST /device/unclaim-notify - Device notifies server it's unclaimed (NO AUTH)
+// Called by device when user triggers factory reset or local UI unclaim
 // ============================================================================
 router.post('/device/unclaim-notify', async (req: Request, res: Response) => {
   try {
-    const { mac } = req.body;
+    const { mac, source } = req.body;  // source: 'factory_reset' | 'local_ui' | undefined
 
     // ============================================================================
     // COMPREHENSIVE SERVER-SIDE UNCLAIM LOGGING
@@ -482,6 +632,7 @@ router.post('/device/unclaim-notify', async (req: Request, res: Response) => {
     console.log('[UNCLAIM-NOTIFY] Source IP:', clientIP);
     console.log('[UNCLAIM-NOTIFY] User-Agent:', userAgent);
     console.log('[UNCLAIM-NOTIFY] Request MAC:', mac);
+    console.log('[UNCLAIM-NOTIFY] Source:', source || 'not_specified');
 
     if (!mac) {
       console.log('[UNCLAIM-NOTIFY] ❌ Validation failed: MAC address missing');
@@ -540,6 +691,22 @@ router.post('/device/unclaim-notify', async (req: Request, res: Response) => {
       [device.id]
     );
     console.log('[UNCLAIM-NOTIFY] ✓ Database updated - unclaimed_at set');
+
+    // Log to audit table
+    const triggerSource = source === 'factory_reset' ? 'device_factory_reset'
+                        : source === 'local_ui' ? 'device_local_ui'
+                        : 'device_unknown';
+    try {
+      await dbPool.query(`
+        INSERT INTO device_claim_audit
+        (device_id, device_mac, device_name, tenant_id, action, trigger_source, actor_ip, reason)
+        VALUES ($1, $2, $3, $4, 'unclaim', $5, $6, 'Device-initiated unclaim')
+      `, [device.id, mqttClientId, device.name, device.tenant_id, triggerSource, clientIP]);
+      console.log('[UNCLAIM-NOTIFY] ✓ Audit log recorded');
+    } catch (auditError: any) {
+      console.error('[UNCLAIM-NOTIFY] ⚠️ Failed to record audit log:', auditError.message);
+      // Continue anyway - audit failure shouldn't block unclaim
+    }
 
     // Remove MQTT credentials
     if (device.mqtt_username) {

@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { Pool } from 'pg';
 import multer from 'multer';
-import { authenticate, AuthRequest } from '../middleware/auth.middleware';
+import { authenticate, AuthRequest, requireRole } from '../middleware/auth.middleware';
 import { validateUuid } from '../middleware/validation.middleware';
 import { createFirmwareStorageService } from '../services/firmware-storage.service';
 import { MqttService } from '../services/mqtt.service';
@@ -44,7 +44,7 @@ router.use((req: AuthRequest, _res: Response, next) => {
   next();
 });
 
-// GET /firmware - List all firmware releases
+// GET /firmware - List all firmware releases (all authenticated users can view)
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
@@ -73,8 +73,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// POST /firmware - Upload a new firmware release
-router.post('/', upload.single('file'), async (req: AuthRequest, res: Response) => {
+// POST /firmware - Upload a new firmware release (admin or superadmin only)
+router.post('/', requireRole('admin', 'superadmin'), upload.single('file'), async (req: AuthRequest, res: Response) => {
   try {
     const file = req.file;
     const tenantId = req.user!.tenantId;
@@ -216,8 +216,8 @@ router.post('/', upload.single('file'), async (req: AuthRequest, res: Response) 
   }
 });
 
-// PUT /firmware/:id - Update firmware metadata and optionally replace file
-router.put('/:id', upload.single('file'), async (req: AuthRequest, res: Response) => {
+// PUT /firmware/:id - Update firmware metadata and optionally replace file (admin or superadmin only)
+router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const file = req.file;
@@ -440,8 +440,8 @@ router.put('/:id', upload.single('file'), async (req: AuthRequest, res: Response
   }
 });
 
-// DELETE /firmware/:id - Delete a firmware release
-router.delete('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
+// DELETE /firmware/:id - Delete a firmware release (admin or superadmin only)
+router.delete('/:id', requireRole('admin', 'superadmin'), validateUuid(), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const tenantId = req.user!.tenantId;
@@ -579,8 +579,8 @@ router.delete('/:id', validateUuid(), async (req: AuthRequest, res: Response) =>
   }
 });
 
-// POST /firmware/clear-retained - Clear all retained MQTT messages for firmware/filesystem
-router.post('/clear-retained', async (req: AuthRequest, res: Response) => {
+// POST /firmware/clear-retained - Clear all retained MQTT messages for firmware/filesystem (admin or superadmin only)
+router.post('/clear-retained', requireRole('admin', 'superadmin'), async (req: AuthRequest, res: Response) => {
   try {
     const tenantId = req.user!.tenantId;
 

@@ -36,7 +36,12 @@ Login and get JWT token
 List all devices for current tenant
 
 **Auth:** Required
-**Query:** `?tenantId=uuid` (optional)
+**Query:** `?status=online,offline,alerting`, `?search=term`, `?offlineFor=1h,24h,7d`
+
+**Master Tenant Behavior:**
+- When viewing Master Tenant: Returns ALL devices across ALL tenants
+- When switched to subtenant: Returns only that tenant's devices
+- Response includes `tenantName` field for each device
 
 ### GET /devices/:id
 Get device details
@@ -46,6 +51,45 @@ Reboot device via MQTT
 
 ### POST /devices/:id/unclaim
 Unclaim device (dashboard-initiated)
+
+### POST /devices/:id/move
+Move device to a different tenant (superadmin only)
+
+**Auth:** Required (Master Tenant superadmin)
+**Request:**
+```json
+{
+  "targetTenantId": "uuid-of-target-tenant"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "deviceId": "same-uuid",
+    "deviceName": "Device Name",
+    "fromTenant": {
+      "id": "old-tenant-uuid",
+      "name": "Old Tenant"
+    },
+    "toTenant": {
+      "id": "new-tenant-uuid",
+      "name": "New Tenant"
+    },
+    "deviceWasOnline": true,
+    "note": "Device was notified via MQTT to update tenant - it will reconnect automatically"
+  }
+}
+```
+
+**Notes:**
+- Preserves device UUID (no ID change)
+- Sends `update_tenant` MQTT command to device
+- Device updates NVS credentials and reconnects to new tenant
+- Does NOT send revocation messages - claim status preserved
+- If device offline: database updated, device will reconnect with new tenant on next boot
 
 ---
 
@@ -209,15 +253,54 @@ Device claim endpoint (public, no auth)
 - Ensures device is not already claimed
 - Returns 400 if not in claiming mode
 
-#### POST /device/unclaim-notify
-Device notifies server of unclaim
+#### POST /device/verify-revocation
+Device verifies revocation token before unclaiming (NO AUTH REQUIRED)
+
+**Added:** 2025-11-27 (Bulletproof Claiming)
+
+**Purpose:** Prevents accidental unclaims - device MUST verify token with server
 
 **Request:**
 ```json
 {
-  "mac": "AA:BB:CC:DD:EE:FF"
+  "mac": "94A990306028",
+  "token": "64-character-hex-revocation-token"
 }
 ```
+
+**Response (valid):**
+```json
+{
+  "valid": true
+}
+```
+
+**Response (invalid):**
+```json
+{
+  "valid": false,
+  "reason": "invalid_token" | "token_expired" | "device_mismatch" | "missing_params"
+}
+```
+
+**Security:**
+- Token is one-time use (deleted after verification)
+- Token expires after 5 minutes
+- Token is bound to specific device MAC
+- ANY error = device stays claimed
+
+#### POST /device/unclaim-notify
+Device notifies server of unclaim (with source tracking)
+
+**Request:**
+```json
+{
+  "mac": "AA:BB:CC:DD:EE:FF",
+  "source": "factory_reset" | "local_ui" | "mqtt_revoke"
+}
+```
+
+**Audit:** Logged to `device_claim_audit` table with source, IP, timestamp
 
 ---
 
@@ -246,6 +329,17 @@ Delete firmware version (clears MQTT retained messages)
 
 ### GET /alerts
 List alerts for tenant
+
+**Auth:** Required
+**Query:** `?severity=critical,high,medium,low`, `?isResolved=true,false`, `?isAcknowledged=true,false`
+
+**Master Tenant Behavior:**
+- When viewing Master Tenant: Returns ALL alerts across ALL tenants
+- When switched to subtenant: Returns only that tenant's alerts
+- Response includes `tenantName`, `macAddress`, `location`, `label` fields
+
+### POST /alerts/:id/acknowledge
+Acknowledge alert
 
 ### POST /alerts/:id/resolve
 Resolve alert (sends alert_reset to device)

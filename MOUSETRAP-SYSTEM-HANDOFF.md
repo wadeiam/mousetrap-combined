@@ -1,11 +1,15 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-11-26
-**Latest Session:** Documentation organization and consolidation
+**Last Updated:** 2025-11-27
+**Latest Session:** RBAC standardization and role enforcement
 
 ---
 
 ## READ THIS FIRST
+
+**IMPORTANT FOR NEW SESSIONS:** Always read this entire document before beginning any work. This document contains critical information that prevents costly mistakes.
+
+**AI ASSISTANTS:** You are responsible for maintaining all project documentation. When you make changes to any component, update the corresponding `.md` file in the relevant `docs/` folder. Update this HANDOFF.md at the end of each session with significant changes. See "End of Session Checklist" and "Documentation Links" below for the full documentation structure.
 
 This is the primary handoff document for MouseTrap development sessions. It contains:
 1. **Persistent operational info** - Commands, credentials, critical warnings
@@ -118,8 +122,8 @@ curl -u "ops:changeme" -F "file=@build/littlefs.bin" http://192.168.133.46/uploa
 ### Database
 
 ```bash
-# Connect to database
-psql -U wadehargrove -d mousetrap_db
+# Connect to database (NOTE: actual db name is mousetrap_monitor)
+/opt/homebrew/opt/postgresql@15/bin/psql -U wadehargrove -d mousetrap_monitor
 
 # Backup before changes
 cd /Users/wadehargrove/Documents/MouseTrap/Server
@@ -186,6 +190,19 @@ tail -f /opt/homebrew/var/log/mosquitto.log
                                            +---------------+
 ```
 
+### Multi-Tenant Access Model
+
+| Role | Scope | Access |
+|------|-------|--------|
+| **superadmin** | Master Tenant | Implicit access to ALL tenants and devices |
+| **admin** | Specific tenant | Full access within their tenant |
+| **operator** | Specific tenant | Device management within tenant |
+| **viewer** | Specific tenant | Read-only access within tenant |
+
+- Superadmin status is determined by `role = 'superadmin'` membership in Master Tenant (`00000000-0000-0000-0000-000000000001`)
+- Superadmins do NOT appear in other tenants' user lists
+- Regular users require explicit `user_tenant_memberships` records
+
 ---
 
 ## Device Information
@@ -205,32 +222,48 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 
 ---
 
-## Current Session Notes (2025-11-26)
+## Current Session Notes (2025-11-27)
 
-### Latest Work: Documentation Organization
+### Latest Work: RBAC Standardization
 
 **Completed:**
-- Reorganized documentation system
-- Updated DOCUMENTATION-SYSTEM-GUIDE.md with complete index
-- Created consolidated HANDOFF.md (this file)
-- Documented persistent operational info
+- Standardized role-based access control across all routes
+- Created migration 009 with SQL helper functions:
+  - `user_is_superadmin(UUID)` - checks superadmin status in Master Tenant
+  - `user_is_tenant_admin(UUID, UUID)` - checks admin+ in specific tenant
+  - `user_role_in_tenant(UUID, UUID)` - returns user's role
+- Added role enforcement to device command routes (reboot, firmware-update, clear-alerts, unclaim, request-snapshot) - now require admin+
+- Added role enforcement to firmware routes (POST/PUT/DELETE require admin+, GET open to all)
+- Added self-profile endpoints (`GET /users/me`, `PUT /users/me`) for viewers to manage their own accounts
+- Added role escalation prevention (can't change own role, only superadmins can assign superadmin)
+- Standardized logs routes to use `requireRole('superadmin')`
+
+**Role Hierarchy (industry standard):**
+| Role | Can Do |
+|------|--------|
+| viewer | Read-only, can only edit own profile (not tenant settings) |
+| operator | Reserved for future use |
+| admin | Full control within their tenant |
+| superadmin | Global access, must be in Master Tenant |
 
 **Previous Sessions:**
+- Superadmin multi-tenant access implementation
+- Documentation organization and consolidation
 - AP+STA mode implementation for captive portal
 - Two-generation log rotation (prevLogs.txt, prevLogs2.txt)
 - Standalone mode for WiFi-only setup
-- Captive portal URL detection fix (getBaseUrl())
 
 ### Current Tasks
 
-**In Progress:**
-- [ ] Verify device claimed status after captive portal fix
-- [ ] Test AP+STA mode with WiFi scanning
-- [ ] Complete end-to-end captive portal claiming test
+**Completed:**
+- [x] Fix superadmin visibility to all tenants
+- [x] Fix superadmin access to devices across tenants
+- [x] Verify device claiming with new tenant
+- [x] Standardize RBAC roles (viewer/admin/superadmin)
+- [x] Add self-profile management endpoints
+- [x] Add role escalation prevention
 
 **Pending:**
-- [ ] Fix WiFi scanning returns 0 networks in AP_STA mode
-- [ ] Test complete claim flow after WiFi scanning works
 - [ ] Implement new button handler (click=reset alarm, 2s=reboot, 10s=factory reset)
 
 ### Known Issues
@@ -278,6 +311,22 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 1. Ensure using correct FQBN (see Persistent Operational Info above)
 2. Use `make compile` not manual arduino-cli with wrong board
 3. See [mousetrap_arduino/docs/FIRMWARE-COMPILATION.md](./mousetrap_arduino/docs/FIRMWARE-COMPILATION.md)
+
+### Shell Escaping with Passwords (zsh)
+The `!` character in passwords like `Admin123!` gets escaped as `\!` in zsh, causing JSON parse errors.
+
+**Wrong:**
+```bash
+curl -d '{"password":"Admin123!"}'  # ! gets escaped to \!
+```
+
+**Right - use heredoc:**
+```bash
+cat << 'ENDJSON' > /tmp/request.json
+{"email":"admin@mastertenant.com","password":"Admin123!"}
+ENDJSON
+curl -d @/tmp/request.json ...
+```
 
 ---
 

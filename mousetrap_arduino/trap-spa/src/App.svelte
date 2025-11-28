@@ -12,6 +12,7 @@
   import Firmware from './pages/Firmware.svelte';
   import TestAlert from './pages/TestAlert.svelte';
   import Setup from './pages/Setup.svelte';
+  import WiFi from './pages/WiFi.svelte';
 
   // Route matching
   $: component = getComponent($currentRoute);
@@ -33,6 +34,7 @@
     if (route.startsWith('/reboot')) return Firmware; // Handle reboot on firmware page
     if (route === '/test') return TestAlert;
     if (route === '/setup') return Setup;
+    if (route === '/wifi') return WiFi;
 
     // Default to Dashboard for unknown routes
     return Dashboard;

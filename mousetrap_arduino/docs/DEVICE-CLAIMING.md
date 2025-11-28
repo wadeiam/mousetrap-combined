@@ -409,15 +409,59 @@ From device SPA: Navigate to **Maintenance → Claim** page and click "Unclaim D
 
 **Logs IP address of unclaim requester** (added 2025-11-16)
 
-### Server-Initiated Unclaim
+### Server-Initiated Unclaim (Bulletproof Token Verification)
 
-If server detects authentication failure, it can send `unclaim` command via MQTT:
+**Added:** 2025-11-27
 
-**Topic:** `tenant/{tenantId}/device/{MAC}/command/unclaim`
+Server unclaims use **token-verified revocation** to prevent accidental unclaims from network issues.
 
-**Firmware handler:** `mousetrap_arduino.ino:1806-1819`
+**Flow:**
+```
+1. Admin clicks "Unclaim" in dashboard
+2. Server generates one-time revocation token (5 min expiry)
+3. Server stores token in revocationTokens Map (devices.routes.ts)
+4. Server sends MQTT /revoke message WITH token
+5. Device receives message, extracts token
+6. Device calls POST /api/device/verify-revocation
+7. Server validates: token exists, not expired, matches device MAC
+8. If valid: Server deletes token, returns {valid: true}
+9. Device unclaims only if server confirms token
+10. ANY ERROR = Device stays claimed
+```
 
-Device automatically unclaims on auth failure.
+**MQTT Revocation Topic:** `tenant/{tenantId}/device/{MAC}/revoke`
+
+**Revocation Message:**
+```json
+{
+  "action": "revoke",
+  "token": "64-char-hex-token",
+  "timestamp": 1700000000000,
+  "reason": "Admin unclaimed device"
+}
+```
+
+**Device Token Verification:**
+- Endpoint: `POST /api/device/verify-revocation`
+- Request: `{ "mac": "94A990306028", "token": "..." }`
+- Response: `{ "valid": true }` or `{ "valid": false, "reason": "..." }`
+
+**Security Hardening:**
+- Token is one-time use (deleted after verification)
+- Token expires after 5 minutes
+- Token is bound to specific device MAC
+- Network errors = device stays claimed
+- Invalid token = device stays claimed
+- Server 500 error = device stays claimed
+
+**Firmware Code:**
+- Token verification: `verifyRevocationToken()` at `mousetrap_arduino.ino:1403-1478`
+- MQTT revoke handler: `mousetrap_arduino.ino:2430-2466`
+
+**Server Code:**
+- Token generation: `devices.routes.ts` `/devices/:id/unclaim` endpoint
+- Token store: `revocationTokens` Map with 5-min expiry
+- Verification endpoint: `claim.routes.ts` `/device/verify-revocation`
 
 ---
 
@@ -518,20 +562,33 @@ preferences.end();
 
 **Fix:** See server MQTT troubleshooting guide
 
-### Spontaneous Unclaim
+### Spontaneous Unclaim (FIXED in v2.0.49)
 
 **Symptom:** Device unclaims unexpectedly
 
-**Possible causes:**
-1. Filesystem OTA triggered unclaim (known issue)
-2. MQTT auth failure triggered auto-unclaim
-3. Server sent unclaim command
-4. User clicked unclaim in SPA
+**Status:** ✅ FIXED with bulletproof token-verified revocation (2025-11-27)
+
+**Previous causes (now mitigated):**
+1. ~~Filesystem OTA triggered unclaim~~ → OTA no longer affects claim status
+2. ~~MQTT auth failure triggered auto-unclaim~~ → Now requires token verification
+3. ~~Server sent unclaim command~~ → Now requires valid token
+4. User clicked unclaim in SPA → Legitimate unclaim with audit trail
+
+**New Security:**
+- Device ONLY unclaims if server verifies token via HTTP
+- Network errors = device stays claimed
+- Invalid/expired tokens = device stays claimed
+- `/api/device/claim-status` returns 404 (not `claimed:false`) if device not found
+
+**Audit Trail:**
+- All unclaim operations logged to `device_claim_audit` table
+- Source tracked: `factory_reset`, `local_ui`, `mqtt_revoke`, `claim_verify`, `admin_dashboard`
+- Actor IP address recorded
 
 **Check:**
-- System logs for unclaim event
-- Logs show IP address of requester
-- Server logs for unclaim-notify calls
+- System logs for unclaim event with source
+- Database `device_claim_audit` table for full history
+- Server logs for `/api/device/verify-revocation` calls
 
 ### Device Shows Wrong MAC (00:00:00:00:00:00)
 

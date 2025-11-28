@@ -3,8 +3,56 @@ import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import jwt, { SignOptions } from 'jsonwebtoken';
+import mqtt from 'mqtt';
 import { syncMqttDevice } from '../utils/mqtt-auth';
 import { logger } from '../services/logger.service';
+
+/**
+ * Clear any retained revoke message for a device on the MQTT broker.
+ * This prevents newly claimed devices from receiving old revoke messages
+ * from previous unclaims.
+ */
+async function clearRetainedRevokeMessage(tenantId: string, mqttClientId: string): Promise<void> {
+  const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
+  const topic = `tenant/${tenantId}/device/${mqttClientId}/revoke`;
+
+  return new Promise((resolve, reject) => {
+    const client = mqtt.connect(brokerUrl, {
+      clientId: `setup_clear_${Date.now()}`,
+      clean: true,
+      connectTimeout: 5000,
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
+    });
+
+    const timeout = setTimeout(() => {
+      client.end(true);
+      reject(new Error('MQTT connection timeout'));
+    }, 10000);
+
+    client.on('connect', () => {
+      // Publish empty retained message to clear the old one
+      client.publish(topic, '', { qos: 1, retain: true }, (err) => {
+        clearTimeout(timeout);
+        client.end();
+        if (err) {
+          console.error(`[SETUP] Failed to clear retained revoke message: ${err.message}`);
+          reject(err);
+        } else {
+          console.log(`[SETUP] Cleared retained revoke message on ${topic}`);
+          resolve();
+        }
+      });
+    });
+
+    client.on('error', (err) => {
+      clearTimeout(timeout);
+      client.end(true);
+      console.error(`[SETUP] MQTT error clearing revoke message: ${err.message}`);
+      reject(err);
+    });
+  });
+}
 
 const router = Router();
 
@@ -353,6 +401,21 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
       await dbPool.query('COMMIT');
       console.log('[SETUP] Step 8 PASSED: Transaction committed successfully');
       logger.info('[SETUP] Step 8 PASSED: Transaction committed', { userId, tenantId, deviceId });
+
+      // ======================================================================
+      // 8.5. Clear any retained revoke message for this device
+      // This prevents re-claimed devices from receiving old revoke messages
+      // ======================================================================
+      try {
+        console.log('[SETUP] Step 8.5: Clearing any retained revoke message...');
+        await clearRetainedRevokeMessage(tenantId, mqttClientId);
+        console.log('[SETUP] Step 8.5 PASSED: Retained revoke message cleared');
+        logger.info('[SETUP] Step 8.5 PASSED: Revoke message cleared', { tenantId, mqttClientId });
+      } catch (clearError: any) {
+        // Log but don't fail - this is a preventive measure
+        console.warn('[SETUP] Step 8.5 WARNING: Could not clear retained revoke message:', clearError.message);
+        logger.warn('[SETUP] Step 8.5 WARNING: Could not clear revoke message', { error: clearError.message, tenantId, mqttClientId });
+      }
 
       // ======================================================================
       // 9. Generate JWT tokens
