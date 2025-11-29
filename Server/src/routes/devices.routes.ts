@@ -1,10 +1,11 @@
 import { Router, Response } from 'express';
 import { Pool } from 'pg';
 import crypto from 'crypto';
+import bcrypt from 'bcrypt';
 import { authenticate, AuthRequest, requireRole } from '../middleware/auth.middleware';
 import { validateUuid } from '../middleware/validation.middleware';
 import { MqttService } from '../services/mqtt.service';
-import { removeMqttDevice } from '../utils/mqtt-auth';
+import { removeMqttDevice, addMqttDevice, reloadMosquitto, updateMqttDevicePassword, getAuthMode, addToDynsecForMigration } from '../utils/mqtt-auth';
 
 const router = Router();
 
@@ -862,11 +863,20 @@ router.post('/:id/request-snapshot', requireRole('admin', 'superadmin'), async (
       });
     }
 
-    // Get device info
-    const deviceResult = await dbPool.query(
-      'SELECT id, name, mqtt_client_id, online FROM devices WHERE id = $1 AND tenant_id = $2',
-      [id, tenantId]
-    );
+    // Get device info - superadmins can access any tenant's devices
+    const isSuperadmin = req.user?.role === 'superadmin';
+    let deviceResult;
+    if (isSuperadmin) {
+      deviceResult = await dbPool.query(
+        'SELECT id, name, mqtt_client_id, online, tenant_id FROM devices WHERE id = $1',
+        [id]
+      );
+    } else {
+      deviceResult = await dbPool.query(
+        'SELECT id, name, mqtt_client_id, online, tenant_id FROM devices WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+    }
 
     if (deviceResult.rows.length === 0) {
       return res.status(404).json({
@@ -885,11 +895,12 @@ router.post('/:id/request-snapshot', requireRole('admin', 'superadmin'), async (
     }
 
     const macAddress = device.mqtt_client_id;
+    const deviceTenantId = device.tenant_id;  // Use device's tenant, not user's
 
     console.log(`[SNAPSHOT] Requesting snapshot from device ${device.name} (${macAddress})`);
 
-    // Send MQTT command to device
-    await mqttService.requestSnapshot(tenantId, macAddress);
+    // Send MQTT command to device using the device's tenant ID
+    await mqttService.requestSnapshot(deviceTenantId, macAddress);
 
     res.json({
       success: true,
@@ -1043,6 +1054,179 @@ router.post('/:id/move', async (req: AuthRequest, res: Response) => {
     });
   } catch (error: any) {
     console.error('Move device error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+});
+
+// ============================================================================
+// POST /devices/:id/rotate-credentials - Rotate MQTT credentials (superadmin only)
+// Used for migrating devices to Dynamic Security without re-claiming
+// ============================================================================
+router.post('/:id/rotate-credentials', requireRole('superadmin'), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user!.userId;
+
+    console.log('[ROTATE-CREDS] ========================================');
+    console.log('[ROTATE-CREDS] Credential rotation request for device:', id);
+    console.log('[ROTATE-CREDS] Initiated by user:', userId);
+
+    // Get device info
+    const deviceResult = await dbPool.query(
+      `SELECT d.id, d.name, d.tenant_id, d.mqtt_client_id, d.mqtt_username, d.online
+       FROM devices d
+       WHERE d.id = $1 AND d.unclaimed_at IS NULL`,
+      [id]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Device not found',
+      });
+    }
+
+    const device = deviceResult.rows[0];
+
+    if (!device.online) {
+      return res.status(503).json({
+        success: false,
+        error: 'Device is offline - credential rotation requires device to be online to receive new credentials',
+      });
+    }
+
+    // Generate new password
+    const newPassword = crypto.randomBytes(24).toString('base64');
+    const rotationId = crypto.randomUUID();
+
+    console.log('[ROTATE-CREDS] Generated rotation ID:', rotationId);
+    console.log('[ROTATE-CREDS] Device:', device.name, '(MAC:', device.mqtt_client_id, ')');
+
+    const authMode = getAuthMode();
+    console.log('[ROTATE-CREDS] Using auth mode:', authMode);
+    let dynsecSynced = false;
+
+    // IMPORTANT: For Dynamic Security mode, we use ACK-based rotation.
+    // Device must confirm receipt of new credentials before we update the broker.
+    // This prevents the race condition where setClientPassword disconnects the device
+    // before it receives the new password.
+
+    if (authMode === 'dynamic_security') {
+      // Dynamic Security mode: ACK-based rotation
+
+      // 1. Send rotation command and wait for ACK
+      console.log('[ROTATE-CREDS] Sending rotation command with ACK (30s timeout)...');
+      const ackReceived = await mqttService.rotateDeviceCredentialsWithAck(
+        device.tenant_id,
+        device.mqtt_client_id,
+        newPassword,
+        rotationId
+      );
+
+      if (!ackReceived) {
+        console.error('[ROTATE-CREDS] Device did not ACK rotation - keeping old credentials');
+        return res.status(504).json({
+          success: false,
+          error: 'Device did not acknowledge credential rotation. Device may be offline or not responding. Old credentials remain valid.',
+        });
+      }
+
+      console.log('[ROTATE-CREDS] Device ACKed rotation - updating broker credentials');
+
+      // 2. Device confirmed - now safe to update broker credentials (this will disconnect the device)
+      try {
+        await updateMqttDevicePassword(device.mqtt_username, newPassword);
+        console.log('[ROTATE-CREDS] New credentials updated in Mosquitto (device will reconnect)');
+      } catch (mqttAuthError: any) {
+        console.error('[ROTATE-CREDS] Failed to update credentials in Mosquitto:', mqttAuthError.message);
+        // Device has new password but broker doesn't - device will fail to reconnect
+        // This is a bad state that needs recovery
+        return res.status(500).json({
+          success: false,
+          error: 'Device received new credentials but broker update failed. Device may need recovery via /device/recover-credentials',
+        });
+      }
+
+      // 3. Update database with new password hash and plaintext
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await dbPool.query(
+        `UPDATE devices SET mqtt_password = $1, mqtt_password_plain = $2, updated_at = NOW() WHERE id = $3`,
+        [passwordHash, newPassword, id]
+      );
+      console.log('[ROTATE-CREDS] Database updated with new password hash');
+
+    } else {
+      // Password file mode: Update Mosquitto first (no disconnect), then send MQTT
+
+      // 1. Update credentials in Mosquitto (no disconnect in password_file mode)
+      try {
+        await updateMqttDevicePassword(device.mqtt_username, newPassword);
+        await reloadMosquitto();
+        console.log('[ROTATE-CREDS] New credentials updated in Mosquitto');
+
+        // Also try to add to Dynamic Security for migration prep
+        try {
+          await addToDynsecForMigration(device.mqtt_username, newPassword);
+          dynsecSynced = true;
+          console.log('[ROTATE-CREDS] Also synced to Dynamic Security for migration');
+        } catch (dynsecError: any) {
+          console.log('[ROTATE-CREDS] Could not sync to Dynamic Security (Docker may not be running):', dynsecError.message);
+        }
+      } catch (mqttAuthError: any) {
+        console.error('[ROTATE-CREDS] Failed to update credentials in Mosquitto:', mqttAuthError.message);
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to update MQTT broker credentials',
+        });
+      }
+
+      // 2. Update database with new password hash
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await dbPool.query(
+        `UPDATE devices SET mqtt_password = $1, updated_at = NOW() WHERE id = $2`,
+        [passwordHash, id]
+      );
+      console.log('[ROTATE-CREDS] Database updated with new password hash');
+
+      // 3. Send rotation command to device via MQTT
+      try {
+        await mqttService.rotateDeviceCredentials(
+          device.tenant_id,
+          device.mqtt_client_id,
+          newPassword,
+          rotationId
+        );
+        console.log('[ROTATE-CREDS] Rotation command sent to device');
+      } catch (mqttError: any) {
+        console.error('[ROTATE-CREDS] Failed to send MQTT command:', mqttError.message);
+        // Don't return error - credentials are already updated
+      }
+    }
+
+    console.log('[ROTATE-CREDS] ✓ Credential rotation initiated successfully');
+    console.log('[ROTATE-CREDS] ========================================');
+
+    res.json({
+      success: true,
+      data: {
+        rotationId,
+        deviceId: id,
+        deviceName: device.name,
+        authMode,
+        dynsecSynced,
+        message: 'Credential rotation initiated. Device will update and reconnect.',
+        note: authMode === 'dynamic_security'
+          ? 'New credentials are active immediately via Dynamic Security.'
+          : dynsecSynced
+            ? 'Credentials synced to both password_file AND Dynamic Security. Ready to switch!'
+            : 'New credentials are active after Mosquitto reload (debounced 2s).',
+      },
+    });
+  } catch (error: any) {
+    console.error('[ROTATE-CREDS] Error rotating credentials:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',

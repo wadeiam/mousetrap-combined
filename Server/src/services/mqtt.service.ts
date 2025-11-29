@@ -32,6 +32,17 @@ interface TypedEventEmitter {
   removeAllListeners(event?: keyof MqttServiceEvents): this;
 }
 
+// Pending rotation tracking for ACK-based credential rotation
+interface PendingRotation {
+  rotationId: string;
+  mqttClientId: string;
+  tenantId: string;
+  newPassword: string;
+  createdAt: number;
+  resolve: (success: boolean) => void;
+  timeout: NodeJS.Timeout;
+}
+
 export class MqttService extends EventEmitter implements TypedEventEmitter {
   private client: MqttClient | null = null;
   private config: MqttConfig;
@@ -43,6 +54,10 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   private isShuttingDown: boolean = false;
   private deviceHeartbeatTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly DEVICE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+  // Credential rotation ACK tracking
+  private pendingRotations: Map<string, PendingRotation> = new Map();
+  private readonly ROTATION_ACK_TIMEOUT_MS = 30 * 1000; // 30 seconds
 
   constructor(config: MqttConfig, dbPool: Pool) {
     super();
@@ -203,6 +218,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       { topic: 'tenant/+/device/+/alert', qos: this.config.qos.default },
       // Subscribe to alert cleared notifications from devices
       { topic: 'tenant/+/device/+/alert_cleared', qos: this.config.qos.default },
+      // Subscribe to credential rotation ACKs from devices
+      { topic: 'tenant/+/device/+/rotation_ack', qos: this.config.qos.commands },
     ];
 
     subscriptions.forEach(({ topic, qos }) => {
@@ -250,6 +267,10 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
         case 'alert_cleared':
           await this.handleAlertCleared(parsedTopic, message);
+          break;
+
+        case 'rotation_ack':
+          this.handleRotationAck(parsedTopic, message);
           break;
 
         default:
@@ -306,6 +327,15 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     if (parts[0] === 'tenant' && parts[2] === 'device' && parts[4] === 'alert_cleared') {
       return {
         type: 'alert_cleared',
+        tenantId: parts[1],
+        macAddress: parts[3],
+      };
+    }
+
+    // tenant/{tenantId}/device/{macAddress}/rotation_ack
+    if (parts[0] === 'tenant' && parts[2] === 'device' && parts[4] === 'rotation_ack') {
+      return {
+        type: 'rotation_ack',
         tenantId: parts[1],
         macAddress: parts[3],
       };
@@ -893,6 +923,152 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       tenantId,
       mqttClientId,
     });
+  }
+
+  /**
+   * Rotate MQTT credentials for a device
+   * Used for migrating devices to Dynamic Security without re-claiming
+   *
+   * Flow:
+   * 1. Generate new password
+   * 2. Add new credentials to Mosquitto (both old and new systems during migration)
+   * 3. Send rotate_credentials command to device via MQTT
+   * 4. Device updates its stored password and reconnects
+   * 5. On successful reconnect, remove old credentials
+   */
+  public async rotateDeviceCredentials(
+    tenantId: string,
+    mqttClientId: string,
+    newPassword: string,
+    rotationId: string
+  ): Promise<void> {
+    const topic = mqttTopics.deviceCommand(tenantId, mqttClientId, 'rotate_credentials');
+    const message = {
+      command: 'rotate_credentials',
+      password: newPassword,
+      rotationId,
+      timestamp: Date.now(),
+    };
+
+    await this.publish(topic, message, { qos: 1, retain: false });
+    console.log(`[MQTT] Published credential rotation to ${topic} (rotationId: ${rotationId})`);
+    logger.info('Device credential rotation published', {
+      tenantId,
+      mqttClientId,
+      rotationId,
+    });
+  }
+
+  /**
+   * Rotate device credentials with ACK confirmation
+   *
+   * This method waits for the device to ACK the rotation before returning.
+   * If no ACK is received within the timeout, returns false.
+   *
+   * Flow:
+   * 1. Send rotate_credentials command to device
+   * 2. Wait for rotation_ack message from device
+   * 3. Return true if ACK received, false if timeout
+   */
+  public async rotateDeviceCredentialsWithAck(
+    tenantId: string,
+    mqttClientId: string,
+    newPassword: string,
+    rotationId: string
+  ): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      // Set up timeout
+      const timeout = setTimeout(() => {
+        const pending = this.pendingRotations.get(rotationId);
+        if (pending) {
+          this.pendingRotations.delete(rotationId);
+          console.log(`[MQTT] Rotation ACK timeout for ${mqttClientId} (${rotationId})`);
+          logger.warn('Credential rotation ACK timeout', {
+            tenantId,
+            mqttClientId,
+            rotationId,
+          });
+          resolve(false);
+        }
+      }, this.ROTATION_ACK_TIMEOUT_MS);
+
+      // Store pending rotation
+      const pending: PendingRotation = {
+        rotationId,
+        mqttClientId,
+        tenantId,
+        newPassword,
+        createdAt: Date.now(),
+        resolve,
+        timeout,
+      };
+      this.pendingRotations.set(rotationId, pending);
+
+      // Send the rotation command
+      this.rotateDeviceCredentials(tenantId, mqttClientId, newPassword, rotationId)
+        .catch((error) => {
+          // Clean up and reject on publish failure
+          clearTimeout(timeout);
+          this.pendingRotations.delete(rotationId);
+          console.error(`[MQTT] Failed to publish rotation command: ${error.message}`);
+          resolve(false);
+        });
+    });
+  }
+
+  /**
+   * Handle rotation ACK from device
+   */
+  private handleRotationAck(parsedTopic: ParsedTopic, message: any): void {
+    const { tenantId, macAddress } = parsedTopic;
+    const rotationId = message.rotationId;
+    const success = message.success !== false; // Default to true if not specified
+
+    console.log(`[MQTT] Rotation ACK received from ${macAddress}: rotationId=${rotationId}, success=${success}`);
+
+    if (!rotationId) {
+      console.warn('[MQTT] Rotation ACK missing rotationId');
+      return;
+    }
+
+    const pending = this.pendingRotations.get(rotationId);
+    if (!pending) {
+      console.warn(`[MQTT] No pending rotation found for ${rotationId}`);
+      return;
+    }
+
+    // Verify it's from the expected device
+    if (pending.mqttClientId !== macAddress) {
+      console.warn(`[MQTT] Rotation ACK device mismatch: expected ${pending.mqttClientId}, got ${macAddress}`);
+      return;
+    }
+
+    // Clear timeout and pending
+    clearTimeout(pending.timeout);
+    this.pendingRotations.delete(rotationId);
+
+    logger.info('Credential rotation ACK received', {
+      tenantId,
+      mqttClientId: macAddress,
+      rotationId,
+      success,
+    });
+
+    // Resolve the promise
+    pending.resolve(success);
+  }
+
+  /**
+   * Get pending rotation by device
+   * Useful for checking if a device has a rotation in progress
+   */
+  public getPendingRotation(mqttClientId: string): PendingRotation | undefined {
+    for (const pending of this.pendingRotations.values()) {
+      if (pending.mqttClientId === mqttClientId) {
+        return pending;
+      }
+    }
+    return undefined;
   }
 
   /**

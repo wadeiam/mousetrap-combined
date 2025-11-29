@@ -203,7 +203,7 @@ export interface MqttServiceEvents {
  * Parsed MQTT topic components
  */
 export interface ParsedTopic {
-  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'unknown';
+  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'rotation_ack' | 'unknown';
   tenantId?: string;
   macAddress?: string;
   commandType?: string;

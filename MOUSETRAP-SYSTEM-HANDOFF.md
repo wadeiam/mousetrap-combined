@@ -1,7 +1,7 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-11-27
-**Latest Session:** RBAC standardization and role enforcement
+**Last Updated:** 2025-11-29
+**Latest Session:** Two-phase setup wizard with WiFi test-first flow
 
 ---
 
@@ -147,18 +147,35 @@ pm2 restart mqtt-server
 
 ### MQTT (Mosquitto)
 
+**Current Mode:** Dynamic Security (Docker)
+
 ```bash
 # Restart broker
-brew services restart mosquitto
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml restart mosquitto
 
 # View logs
-tail -f /opt/homebrew/var/log/mosquitto.log
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml logs -f mosquitto
 
-# Config file
-/opt/homebrew/etc/mosquitto/mosquitto.conf
+# Config files
+/Users/wadehargrove/Documents/MouseTrap/Server/mosquitto/config/mosquitto.conf
+/Users/wadehargrove/Documents/MouseTrap/Server/mosquitto/config/dynamic-security.json
+```
 
-# Password file
-/opt/homebrew/etc/mosquitto/passwd
+**Dynamic Security Credentials:**
+| User | Role | Purpose |
+|------|------|---------|
+| server_admin | admin | Manage credentials via `$CONTROL/dynamic-security/#` |
+| mqtt_client | server | Server pub/sub to all topics |
+| {MAC_ADDRESS} | device | Device pub/sub to `tenant/#` and `global/#` |
+
+**Fallback to Homebrew (if needed):**
+```bash
+# Stop Docker, start Homebrew
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml down
+brew services start mosquitto
+
+# Update .env: MQTT_AUTH_MODE=password_file
+# Rebuild and restart server
 ```
 
 ---
@@ -222,31 +239,150 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 
 ---
 
-## Current Session Notes (2025-11-27)
+## Current Session Notes (2025-11-29)
 
-### Latest Work: RBAC Standardization
+### Latest Work: Device Claim Recovery & Superadmin Snapshot Fix
 
-**Completed:**
-- Standardized role-based access control across all routes
-- Created migration 009 with SQL helper functions:
-  - `user_is_superadmin(UUID)` - checks superadmin status in Master Tenant
-  - `user_is_tenant_admin(UUID, UUID)` - checks admin+ in specific tenant
-  - `user_role_in_tenant(UUID, UUID)` - returns user's role
-- Added role enforcement to device command routes (reboot, firmware-update, clear-alerts, unclaim, request-snapshot) - now require admin+
-- Added role enforcement to firmware routes (POST/PUT/DELETE require admin+, GET open to all)
-- Added self-profile endpoints (`GET /users/me`, `PUT /users/me`) for viewers to manage their own accounts
-- Added role escalation prevention (can't change own role, only superadmins can assign superadmin)
-- Standardized logs routes to use `requireRole('superadmin')`
+**Status:** Complete - Both Kitchen and Biggy devices working
 
-**Role Hierarchy (industry standard):**
-| Role | Can Do |
-|------|--------|
-| viewer | Read-only, can only edit own profile (not tenant settings) |
-| operator | Reserved for future use |
-| admin | Full control within their tenant |
-| superadmin | Global access, must be in Master Tenant |
+**What Was Implemented:**
+
+1. **Device Claim Recovery** (`setup.routes.ts`, `mousetrap_arduino.ino`)
+   - New `/api/setup/recover-claim` endpoint allows devices to recover credentials after NVS loss
+   - After WiFi connects during setup, device checks if already claimed on server
+   - If claimed: Recovers MQTT credentials, skips account setup, connects immediately
+   - If not claimed: Proceeds to normal account creation/sign-in flow
+   - **Security model:** Devices can only pub/sub to their own MQTT topics, MAC is hardware-burned
+   - Device stays in original tenant on recovery (prevents "stealing")
+
+2. **Factory Reset Preserves Server Claim** (`mousetrap_arduino.ino:3936-3940`)
+   - Physical factory reset (10s button hold) now only clears LOCAL NVS
+   - Does NOT notify server - claim record preserved for recovery
+   - Users who want to truly unclaim should use the dashboard
+   - Prevents devices getting stranded when NVS is cleared
+
+3. **Superadmin Cross-Tenant Snapshot Fix** (`devices.routes.ts`, `server.ts`)
+   - Superadmins can now request snapshots from devices in any tenant
+   - Fixed: `request-snapshot` endpoint now allows superadmin access to all devices
+   - Fixed: Uses device's actual `tenant_id` for MQTT command (not user's tenant)
+   - Fixed: Snapshots from non-Master tenants also forwarded to Master Tenant WebSocket room
+   - Allows superadmins in Master Tenant to see snapshots from all devices
+
+4. **AP Channel Optimization at Boot** (`mousetrap_arduino.ino`)
+   - Added `channel` field to `CachedNetwork` struct
+   - Early boot scan captures WiFi channel info
+   - AP starts on strongest network's channel (prevents phone disconnection during setup)
+   - Removed channel-change code from WiFi test phase
+
+5. **AP Disabled After Claim Recovery** (`mousetrap_arduino.ino:11749-11759`)
+   - After successful claim recovery, device immediately:
+     - Connects to MQTT
+     - Disables AP mode (`WiFi.softAPdisconnect(true)`)
+     - Switches to STA-only mode
+   - No reboot required
+
+**Files Modified:**
+- `Server/src/routes/setup.routes.ts` - Added `/recover-claim` endpoint
+- `Server/src/routes/devices.routes.ts` - Superadmin cross-tenant snapshot access
+- `Server/src/server.ts` - Forward snapshots to Master Tenant room for superadmins
+- `mousetrap_arduino/mousetrap_arduino.ino` - Recovery logic, factory reset fix, channel optimization
+
+---
+
+## Previous Session Notes (2025-11-29 - Earlier)
+
+### Two-Phase Setup Wizard - WORKING
+
+**Status:** Setup wizard working
+
+**What Was Implemented:**
+
+1. **Two-Phase Setup Flow** (`mousetrap_arduino.ino`, `trap-spa/src/pages/Setup.svelte`, `trap-spa/src/lib/api.js`)
+   - **Phase 1:** Test WiFi connection before asking for account info
+     - New `/api/setup/test-wifi` endpoint connects to WiFi in AP+STA mode
+     - Device scans for target network channel, starts AP on same channel
+     - If WiFi fails → User can retry immediately with different credentials
+     - If WiFi succeeds → Proceeds to account step
+   - **Phase 2:** Register with server (WiFi already connected)
+     - New `/api/setup/register` endpoint for registration only
+     - WiFi connection already established, more reliable
+   - **Channel matching:** Both AP and STA interfaces must be on same channel (ESP32-S3 hardware limitation)
+
+2. **Critical AP Mode Fix** (`mousetrap_arduino.ino:11608-11649`)
+   - **Root cause of phone disconnection:** Was switching to `WIFI_STA` mode during network scan, dropping the AP
+   - **Fix:** Stay in `WIFI_AP_STA` mode during scan, only restart AP if channel needs to change
+   - Phone now stays connected through WiFi test
+
+3. **WiFi Connection Improvements**
+   - Reduced WiFi connection timeout from 15s to 10s
+   - Added `WiFi.disconnect(true)` before retry to clear stale connection state
+   - WiFi retry now works correctly after failed attempt
+
+4. **Server Stability Fix** (`server.ts:84-91`)
+   - Added MQTT error handler to prevent Node.js crash on unhandled `error` events
+   - Also fixed: Added `rotation_ack` to `ParsedTopic` type union
+
+**Completed: Forgot Password UX** (`trap-spa/src/pages/Setup.svelte`)
+- Added "Forgot password?" link below password field on Step 3 (Sign In tab only)
+- Tapping shows info box with instructions:
+  1. Connect to your home WiFi network
+  2. Visit dashboard.mousetrap.com/forgot-password
+  3. Reset your password via email
+  4. Return here to complete setup
+- Info box is dismissible (X button)
+- SPA rebuilt and ready for deployment
+
+**Future Enhancement: Register First, Claim Later**
+- Deferred for better UX: Device registers without account, user claims from dashboard later
+- Would eliminate password issues entirely during captive portal setup
+- Queue alerts until device is claimed
+
+---
+
+## Previous Session Notes (2025-11-28)
+
+### Dashboard UX Improvements & Firmware Fixes
+
+**Status:** Complete
+
+**What Was Implemented:**
+
+1. **Dashboard Device Card Click Navigation** (`trap-dashboard/src/components/devices/DeviceCard.tsx`)
+   - Entire device card is now clickable to navigate to device details
+   - Removed "View Details" button from card footer
+   - Action buttons (delete, move) still work independently via `e.stopPropagation()`
+
+2. **Auto-Capture Snapshot on Modal Open** (`trap-dashboard/src/components/SnapshotViewer.tsx`)
+   - Added `autoCapture` prop to SnapshotViewer component
+   - When clicking "Capture Snapshot" button, modal opens and immediately requests snapshot
+   - Uses `useCallback` and `useRef` for proper React hook handling
+   - "Capture New" button remains for taking additional snapshots
+
+3. **Firmware: Fixed "Rejected revocation - missing token" Log Spam** (`mousetrap_arduino.ino`)
+   - Empty retained MQTT messages on `/revoke` topics were triggering revocation handler
+   - Added check to silently ignore empty/null payloads on revoke topic
+   - Caused by `clearRetainedRevokeMessage()` which publishes empty retained messages
+
+4. **Firmware: ACK-based Credential Rotation Support** (`mousetrap_arduino.ino`)
+   - Device now publishes ACK to `rotation_ack` topic after saving new credentials to NVS
+   - ACK is published BEFORE disconnecting so server can update broker
+   - Firmware compiled and ready for OTA deployment
+
+5. **APSTA Mode Setup with Real-Time Progress** (`mousetrap_arduino.ino`, `trap-spa/src/pages/Setup.svelte`)
+   - ESP32-S3 now uses `WiFi.mode(WIFI_AP_STA)` during setup - AP stays running while connecting to WiFi
+   - SPA polls `/api/setup/progress` every 500ms for real-time feedback
+   - Added `/api/setup/reset` endpoint to retry setup without reboot
+   - Added `/api/setup/reboot` endpoint for user-triggered reboot after success
+   - Contextual error messages with specific help (wrong password, WiFi not found, etc.)
+   - Deployed to Biggy via serial upload (115200 baud)
+
+**Previous Work (Same Day):**
+- Device stranding prevention mitigations (ACK-based rotation, recovery endpoint, scripts)
+- Migrated to Docker Mosquitto with Dynamic Security (LIVE)
+- Re-claimed both devices (Kitchen, Biggy)
 
 **Previous Sessions:**
+- RBAC standardization and role enforcement
 - Superadmin multi-tenant access implementation
 - Documentation organization and consolidation
 - AP+STA mode implementation for captive portal
@@ -256,22 +392,56 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 ### Current Tasks
 
 **Completed:**
-- [x] Fix superadmin visibility to all tenants
-- [x] Fix superadmin access to devices across tenants
-- [x] Verify device claiming with new tenant
-- [x] Standardize RBAC roles (viewer/admin/superadmin)
-- [x] Add self-profile management endpoints
-- [x] Add role escalation prevention
+- [x] Set up Docker Mosquitto with Dynamic Security
+- [x] Implement credential rotation endpoint
+- [x] Add rotate_credentials firmware command
+- [x] Update mqtt-auth.ts for dual-mode support
+- [x] Test credential rotation with Biggy device
+- [x] Add migration sync to rotation endpoint
+- [x] Fixed device connection issues (rc=5) by re-claiming both devices
+- [x] Documented parallel rotation migration approach in MQTT-SETUP.md
+- [x] **Migrated to Docker Mosquitto with Dynamic Security (LIVE)**
+- [x] Re-claimed Kitchen (94A990306028) and Biggy (D0CF13155060) devices
+- [x] **Implemented device stranding prevention mitigations**
+- [x] Added ACK-based credential rotation
+- [x] Added `/device/recover-credentials` endpoint
+- [x] Created `rebuild-dynsec-from-db.ts` script
+- [x] Created `check-credential-sync.ts` health check script
+- [x] Documented stranding scenarios in `docs/DEVICE-STRANDING-SCENARIOS.md`
+- [x] Add firmware support for `rotation_ack` MQTT message - **DEPLOYED**
+- [x] Fixed "Rejected revocation - missing token" log spam in firmware
+- [x] Dashboard: Device cards now clickable to navigate to details
+- [x] Dashboard: Capture Snapshot auto-requests on modal open
+- [x] Implemented APSTA mode setup with real-time progress polling
+- [x] Deployed APSTA firmware to Biggy via serial - **VERIFIED WORKING**
+- [x] Deployed APSTA firmware to Kitchen via OTA - **VERIFIED WORKING**
+- [x] Implemented device claim recovery (`/api/setup/recover-claim` endpoint)
+- [x] Fixed factory reset to preserve server claim for recovery
+- [x] Fixed superadmin cross-tenant snapshot access
+- [x] Fixed WebSocket snapshot forwarding for cross-tenant devices
 
 **Pending:**
+- [ ] Deploy updated firmware to Biggy (factory reset fix compiled but not uploaded)
 - [ ] Implement new button handler (click=reset alarm, 2s=reboot, 10s=factory reset)
 
 ### Known Issues
 
+**FIXED: Server MQTT Connack Timeout Crashes:**
+- ~~Server crashes repeatedly with `Error: connack timeout`~~
+- ~~Over 4731 restarts observed in pm2~~
+- **Root cause:** Unhandled `error` event from MqttService EventEmitter
+- **Fix applied:** Added error handler in `server.ts:84-91`
+- Server now handles MQTT errors gracefully without crashing
+
 **WiFi Scanning in AP_STA Mode:**
 - `WiFi.scanNetworks()` returns 0 when ESP32-S3 is in AP_STA mode
-- Current approach: Temporarily switch to STA mode during scan
-- Status: Testing
+- **Solution:** Temporarily switch to STA mode during scan, then back to AP_STA
+- Status: Fixed in two-phase setup
+
+**AP+STA Mode Channel Requirement:**
+- Both AP and STA interfaces must operate on the same WiFi channel
+- Firmware now scans for target network channel before starting AP
+- Status: Fixed
 
 **Filesystem OTA May Cause Unclaim:**
 - After littlefs.bin upload, device may unclaim
@@ -285,10 +455,12 @@ tail -f /opt/homebrew/var/log/mosquitto.log
 - `tenant/{tenantId}/device/{clientId}/status` - Device status
 - `tenant/{tenantId}/device/{MAC}/alert` - Alert notifications
 - `tenant/{tenantId}/device/{MAC}/alert_cleared` - Alert cleared confirmation
+- `tenant/{tenantId}/device/{clientId}/rotation_ack` - Credential rotation ACK
 
 ### Server to Device
 - `tenant/{tenantId}/device/{clientId}/command/reboot` - Reboot command
 - `tenant/{tenantId}/device/{clientId}/command/alert_reset` - Clear alert
+- `tenant/{tenantId}/device/{clientId}/command/rotate_credentials` - Credential rotation
 - `global/firmware/latest` - Global firmware updates
 - `global/filesystem/latest` - Global filesystem updates
 
@@ -336,6 +508,7 @@ curl -d @/tmp/request.json ...
 |-------|----------|
 | Documentation navigation | [DOCUMENTATION-SYSTEM-GUIDE.md](./DOCUMENTATION-SYSTEM-GUIDE.md) |
 | Device claiming flow | [DEVICE-CLAIMING-FLOW.md](./DEVICE-CLAIMING-FLOW.md) |
+| **Device stranding & recovery** | **[Server/docs/DEVICE-STRANDING-SCENARIOS.md](./Server/docs/DEVICE-STRANDING-SCENARIOS.md)** |
 | Firmware compilation | [mousetrap_arduino/docs/FIRMWARE-COMPILATION.md](./mousetrap_arduino/docs/FIRMWARE-COMPILATION.md) |
 | OTA deployment | [mousetrap_arduino/docs/OTA-DEPLOYMENT.md](./mousetrap_arduino/docs/OTA-DEPLOYMENT.md) |
 | SPA development | [mousetrap_arduino/docs/SPA-DEVELOPMENT.md](./mousetrap_arduino/docs/SPA-DEVELOPMENT.md) |

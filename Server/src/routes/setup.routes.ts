@@ -240,12 +240,13 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
     const mqttClientId = mac.replace(/:/g, '');
     console.log('[SETUP] Step 4: Checking if device is claimed...', { mqttClientId });
     const existingDevice = await dbPool.query(
-      'SELECT id, unclaimed_at FROM devices WHERE mqtt_client_id = $1',
+      'SELECT id, tenant_id, unclaimed_at FROM devices WHERE mqtt_client_id = $1',
       [mqttClientId]
     );
     console.log('[SETUP] Device query result:', {
       found: existingDevice.rows.length > 0,
-      unclaimed_at: existingDevice.rows[0]?.unclaimed_at
+      unclaimed_at: existingDevice.rows[0]?.unclaimed_at,
+      tenant_id: existingDevice.rows[0]?.tenant_id
     });
     logger.info('[SETUP] Step 4: Device check', {
       mqttClientId,
@@ -253,26 +254,36 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
       unclaimed_at: existingDevice.rows[0]?.unclaimed_at
     });
 
+    // Track if we're reclaiming an existing device
+    let isReclaim = false;
+    let existingDeviceId: string | null = null;
+    let existingTenantId: string | null = null;
+
     if (existingDevice.rows.length > 0) {
       const device = existingDevice.rows[0];
 
-      // If device is currently claimed (not soft-deleted), reject
+      // If device is currently claimed (not soft-deleted)
       if (device.unclaimed_at === null) {
-        console.log('[SETUP] REJECTED: Device already claimed:', mac);
-        logger.warn('[SETUP] Step 4 FAILED: Device already claimed', { mac, mqttClientId, deviceId: device.id });
-        return res.status(409).json({
-          success: false,
-          error: 'Device already claimed',
+        // Device already exists - allow reclaim with fresh credentials
+        // This handles NVS loss from factory reset, power issues, etc.
+        // Security note: Device can only pub/sub to its own MQTT topics,
+        // and MAC is hardware-burned, so there's no risk in refreshing creds.
+        console.log('[SETUP] Device already claimed - allowing reclaim with fresh credentials:', mac);
+        logger.info('[SETUP] Step 4: Allowing reclaim (device lost NVS)', {
+          mac, mqttClientId, deviceId: device.id, existingTenant: device.tenant_id
         });
+        isReclaim = true;
+        existingDeviceId = device.id;
+        existingTenantId = device.tenant_id;
+      } else {
+        // Device was unclaimed - delete the old record to allow fresh claim
+        console.log('[SETUP] Removing old unclaimed device record:', device.id);
+        logger.info('[SETUP] Step 4: Deleting old unclaimed device', { deviceId: device.id, mqttClientId });
+        await dbPool.query('DELETE FROM devices WHERE id = $1', [device.id]);
       }
-
-      // Device was unclaimed - delete the old record to allow fresh claim
-      console.log('[SETUP] Removing old unclaimed device record:', device.id);
-      logger.info('[SETUP] Step 4: Deleting old unclaimed device', { deviceId: device.id, mqttClientId });
-      await dbPool.query('DELETE FROM devices WHERE id = $1', [device.id]);
     }
-    console.log('[SETUP] Step 4 PASSED: Device check complete');
-    logger.info('[SETUP] Step 4 PASSED: Device can be claimed', { mqttClientId });
+    console.log('[SETUP] Step 4 PASSED: Device check complete', { isReclaim });
+    logger.info('[SETUP] Step 4 PASSED: Device can be claimed', { mqttClientId, isReclaim });
 
     // ========================================================================
     // 5. Start atomic transaction for user creation and device claiming
@@ -327,51 +338,91 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
       }
 
       // ======================================================================
-      // 6. Generate MQTT credentials and create device
+      // 6. Generate MQTT credentials and create/update device
       // ======================================================================
-      console.log('[SETUP] Step 6: Creating device...', { tenantId, deviceName });
-      logger.info('[SETUP] Step 6: Creating device', { tenantId, deviceName, mqttClientId });
+      console.log('[SETUP] Step 6: Creating/updating device...', { tenantId, deviceName, isReclaim });
+      logger.info('[SETUP] Step 6: Creating/updating device', { tenantId, deviceName, mqttClientId, isReclaim });
 
-      const deviceId = crypto.randomUUID();
       const mqttUsername = mqttClientId; // Use MAC address without colons
       const mqttPassword = crypto.randomBytes(16).toString('hex');
       const mqttPasswordHash = await bcrypt.hash(mqttPassword, 10);
 
-      console.log('[SETUP] Generated MQTT credentials:', {
-        deviceId,
-        mqttClientId,
-        mqttUsername,
-        tenantId,
-      });
+      let deviceId: string;
+      let deviceResult;
 
-      // Insert device
-      const deviceResult = await dbPool.query(
-        `INSERT INTO devices (
-          id, tenant_id, mqtt_client_id, name, device_name,
-          mqtt_username, mqtt_password, mqtt_password_plain,
-          hardware_version, firmware_version, filesystem_version,
-          status, claimed_at, last_seen, online
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), true)
-        RETURNING id, mqtt_client_id, mqtt_username, name`,
-        [
+      if (isReclaim && existingDeviceId) {
+        // Reclaim existing device - update credentials and name
+        // Keep the device in its original tenant (don't let someone "steal" a device)
+        deviceId = existingDeviceId;
+        const effectiveTenantId = existingTenantId || tenantId;
+        console.log('[SETUP] Reclaiming existing device:', { deviceId, deviceName, effectiveTenantId });
+        logger.info('[SETUP] Step 6: Reclaiming existing device', { deviceId, effectiveTenantId, deviceName });
+
+        deviceResult = await dbPool.query(
+          `UPDATE devices SET
+            name = $1,
+            device_name = $2,
+            mqtt_password = $3,
+            mqtt_password_plain = $4,
+            status = 'offline',
+            claimed_at = NOW(),
+            last_seen = NOW(),
+            online = true,
+            mac_address = $5
+          WHERE id = $6
+          RETURNING id, mqtt_client_id, mqtt_username, name`,
+          [
+            deviceName,
+            deviceName,
+            mqttPasswordHash,
+            mqttPassword,
+            mac, // Also update mac_address field
+            deviceId,
+          ]
+        );
+
+        console.log('[SETUP] Step 6 PASSED: Device reclaimed:', deviceResult.rows[0]);
+        logger.info('[SETUP] Step 6 PASSED: Device reclaimed', { deviceId, tenantId, name: deviceName });
+      } else {
+        // Create new device
+        deviceId = crypto.randomUUID();
+
+        console.log('[SETUP] Generated MQTT credentials:', {
           deviceId,
-          tenantId,
           mqttClientId,
-          deviceName,
-          deviceName,
           mqttUsername,
-          mqttPasswordHash,
-          mqttPassword, // Store plaintext for Mosquitto sync
-          'ESP32',
-          '1.0.0',
-          '1.0.0',
-          'offline',
-        ]
-      );
+          tenantId,
+        });
 
-      console.log('[SETUP] Step 6 PASSED: Device inserted:', deviceResult.rows[0]);
-      logger.info('[SETUP] Step 6 PASSED: Device created', { deviceId, tenantId, name: deviceName });
+        deviceResult = await dbPool.query(
+          `INSERT INTO devices (
+            id, tenant_id, mqtt_client_id, name, device_name,
+            mqtt_username, mqtt_password, mqtt_password_plain,
+            hardware_version, firmware_version, filesystem_version,
+            status, claimed_at, last_seen, online, mac_address
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), true, $13)
+          RETURNING id, mqtt_client_id, mqtt_username, name`,
+          [
+            deviceId,
+            tenantId,
+            mqttClientId,
+            deviceName,
+            deviceName,
+            mqttUsername,
+            mqttPasswordHash,
+            mqttPassword, // Store plaintext for Mosquitto sync
+            'ESP32',
+            '1.0.0',
+            '1.0.0',
+            'offline',
+            mac, // Store MAC address with colons
+          ]
+        );
+
+        console.log('[SETUP] Step 6 PASSED: Device inserted:', deviceResult.rows[0]);
+        logger.info('[SETUP] Step 6 PASSED: Device created', { deviceId, tenantId, name: deviceName });
+      }
 
       // ======================================================================
       // 7. Sync MQTT credentials to Mosquitto
@@ -526,6 +577,139 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
       success: false,
       error: 'Internal server error during setup',
       details: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// POST /recover-claim - Check if device is already claimed and return credentials
+// Called by device after WiFi connects to see if it can skip account setup
+// ============================================================================
+router.post('/recover-claim', async (req: Request, res: Response) => {
+  try {
+    const { mac, claimToken, timestamp } = req.body;
+
+    console.log('========================================');
+    console.log('[SETUP] Recover claim request');
+    console.log('[SETUP] MAC:', mac);
+    console.log('========================================');
+
+    // Validate required fields
+    if (!mac || !claimToken || !timestamp) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: mac, claimToken, timestamp',
+      });
+    }
+
+    // Validate MAC address format
+    const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+    if (!macRegex.test(mac)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid MAC address format',
+      });
+    }
+
+    // Verify HMAC claim token (proves device authenticity)
+    if (!verifyClaimToken(mac, timestamp, claimToken)) {
+      console.log('[SETUP] Invalid or expired claim token for recover-claim');
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid or expired claim token',
+      });
+    }
+
+    // Check if device exists in database
+    const mqttClientId = mac.replace(/:/g, '');
+    const deviceResult = await dbPool.query(
+      `SELECT id, tenant_id, mqtt_client_id, mqtt_username, mqtt_password_plain, name, unclaimed_at
+       FROM devices WHERE mqtt_client_id = $1`,
+      [mqttClientId]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      // Device not in database - needs full registration
+      console.log('[SETUP] Device not found - needs full registration:', mac);
+      return res.status(404).json({
+        success: false,
+        error: 'Device not claimed',
+        needsRegistration: true,
+      });
+    }
+
+    const device = deviceResult.rows[0];
+
+    // If device was unclaimed, it needs full registration
+    if (device.unclaimed_at !== null) {
+      console.log('[SETUP] Device was unclaimed - needs full registration:', mac);
+      return res.status(404).json({
+        success: false,
+        error: 'Device was unclaimed',
+        needsRegistration: true,
+      });
+    }
+
+    // Device is claimed! Generate fresh MQTT password and return credentials
+    console.log('[SETUP] Device found - recovering claim:', { deviceId: device.id, tenantId: device.tenant_id });
+
+    // Generate new MQTT password for security
+    const mqttPassword = crypto.randomBytes(16).toString('hex');
+    const mqttPasswordHash = await bcrypt.hash(mqttPassword, 10);
+
+    // Update device with new password
+    await dbPool.query(
+      `UPDATE devices SET
+        mqtt_password = $1,
+        mqtt_password_plain = $2,
+        last_seen = NOW(),
+        online = true,
+        mac_address = $3
+       WHERE id = $4`,
+      [mqttPasswordHash, mqttPassword, mac, device.id]
+    );
+
+    // Sync new credentials to Mosquitto
+    try {
+      await syncMqttDevice(device.mqtt_username, mqttPassword, true);
+      console.log('[SETUP] MQTT credentials synced for recovered device');
+    } catch (mqttError: any) {
+      console.error('[SETUP] MQTT sync error during recovery:', mqttError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to sync MQTT credentials',
+      });
+    }
+
+    // Clear any retained revoke message
+    try {
+      await clearRetainedRevokeMessage(device.tenant_id, mqttClientId);
+    } catch (clearError: any) {
+      console.warn('[SETUP] Could not clear retained revoke message:', clearError.message);
+    }
+
+    console.log('[SETUP] Claim recovered successfully for:', mac);
+    logger.info('[SETUP] Claim recovered', { deviceId: device.id, tenantId: device.tenant_id, mac });
+
+    res.json({
+      success: true,
+      recovered: true,
+      deviceId: device.id,
+      tenantId: device.tenant_id,
+      mqttClientId,
+      mqttBroker: process.env.MQTT_BROKER_URL || 'mqtt://192.168.133.110:1883',
+      mqttCredentials: {
+        username: device.mqtt_username,
+        password: mqttPassword,
+      },
+      deviceName: device.name,
+    });
+  } catch (error: any) {
+    console.error('[SETUP] Error in recover-claim:', error.message);
+    logger.error('[SETUP] recover-claim error', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
     });
   }
 });

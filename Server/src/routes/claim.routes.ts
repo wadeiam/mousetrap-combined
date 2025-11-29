@@ -3,7 +3,7 @@ import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
 import mqtt from 'mqtt';
-import { syncMqttDevice } from '../utils/mqtt-auth';
+import { syncMqttDevice, addMqttDevice, getAuthMode } from '../utils/mqtt-auth';
 import Bonjour from 'bonjour-service';
 import { revocationTokens } from './devices.routes';
 
@@ -908,6 +908,241 @@ router.get('/device/discover', async (req: Request, res: Response) => {
       success: false,
       error: 'Server error during mDNS discovery',
       details: error.message,
+    });
+  }
+});
+
+// ============================================================================
+// POST /device/recover-credentials - Recover MQTT credentials (NO AUTH REQUIRED)
+//
+// STRANDING RECOVERY: For devices that are claimed but can't connect to MQTT.
+// This can happen when:
+// - Credential rotation failed halfway (device has old creds, broker has new)
+// - Dynamic Security file was rebuilt from backup
+// - Broker was reinstalled
+// - Database-broker desync
+//
+// Security: Device must prove it has the CORRECT deviceId (UUID from claim)
+// to receive credentials. MAC alone is not sufficient.
+// ============================================================================
+router.post('/device/recover-credentials', async (req: Request, res: Response) => {
+  try {
+    const { mac, deviceId, currentPassword } = req.body;
+    const clientIP = req.ip || req.socket?.remoteAddress || 'unknown';
+
+    console.log('========================================');
+    console.log('[RECOVER-CREDS] Credential recovery request');
+    console.log('[RECOVER-CREDS] Timestamp:', new Date().toISOString());
+    console.log('[RECOVER-CREDS] Client IP:', clientIP);
+    console.log('[RECOVER-CREDS] MAC:', mac);
+    console.log('[RECOVER-CREDS] Device ID provided:', deviceId ? 'yes' : 'no');
+    console.log('[RECOVER-CREDS] Current password provided:', currentPassword ? 'yes' : 'no');
+    console.log('========================================');
+
+    if (!mac) {
+      console.log('[RECOVER-CREDS] REJECTED: Missing MAC address');
+      return res.status(400).json({
+        success: false,
+        error: 'MAC address is required',
+      });
+    }
+
+    // At least one of deviceId or currentPassword must be provided for verification
+    if (!deviceId && !currentPassword) {
+      console.log('[RECOVER-CREDS] REJECTED: No verification credentials provided');
+      return res.status(400).json({
+        success: false,
+        error: 'deviceId or currentPassword required for verification',
+      });
+    }
+
+    const mqttClientId = String(mac).replace(/:/g, '').toUpperCase();
+
+    // Look up device in database
+    const result = await dbPool.query(
+      `SELECT id, tenant_id, mqtt_client_id, mqtt_username, mqtt_password, mqtt_password_plain, name, unclaimed_at
+       FROM devices
+       WHERE mqtt_client_id = $1`,
+      [mqttClientId]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('[RECOVER-CREDS] REJECTED: Device not found');
+      return res.status(404).json({
+        success: false,
+        error: 'Device not found',
+      });
+    }
+
+    const device = result.rows[0];
+
+    // Check if device has been unclaimed
+    if (device.unclaimed_at !== null) {
+      console.log('[RECOVER-CREDS] REJECTED: Device has been unclaimed');
+      return res.status(410).json({
+        success: false,
+        error: 'Device has been unclaimed',
+      });
+    }
+
+    // Verify the request is legitimate
+    let verified = false;
+    let verificationMethod = '';
+
+    // Method 1: Device ID match (strongest verification)
+    if (deviceId && device.id === deviceId) {
+      verified = true;
+      verificationMethod = 'deviceId';
+      console.log('[RECOVER-CREDS] Verified via deviceId match');
+    }
+
+    // Method 2: Current password hash match (device knows old password)
+    if (!verified && currentPassword && device.mqtt_password) {
+      const passwordMatch = await bcrypt.compare(currentPassword, device.mqtt_password);
+      if (passwordMatch) {
+        verified = true;
+        verificationMethod = 'password_hash';
+        console.log('[RECOVER-CREDS] Verified via password hash match');
+      }
+    }
+
+    // Method 3: Current password plaintext match (fallback)
+    if (!verified && currentPassword && device.mqtt_password_plain === currentPassword) {
+      verified = true;
+      verificationMethod = 'password_plain';
+      console.log('[RECOVER-CREDS] Verified via plaintext password match');
+    }
+
+    if (!verified) {
+      console.log('[RECOVER-CREDS] REJECTED: Verification failed');
+      console.log('[RECOVER-CREDS]   Device ID in DB:', device.id);
+      console.log('[RECOVER-CREDS]   Device ID provided:', deviceId);
+      return res.status(403).json({
+        success: false,
+        error: 'Verification failed',
+      });
+    }
+
+    console.log('[RECOVER-CREDS] Device verified via:', verificationMethod);
+
+    // Check if we have the plaintext password
+    if (!device.mqtt_password_plain) {
+      // No plaintext password - we need to generate a new one
+      console.log('[RECOVER-CREDS] No plaintext password available - generating new credentials');
+
+      const newPassword = crypto.randomBytes(16).toString('hex');
+      const newPasswordHash = await bcrypt.hash(newPassword, 10);
+
+      // Update database
+      await dbPool.query(
+        `UPDATE devices SET mqtt_password = $1, mqtt_password_plain = $2, updated_at = NOW() WHERE id = $3`,
+        [newPasswordHash, newPassword, device.id]
+      );
+
+      // Sync to broker
+      try {
+        await addMqttDevice(device.mqtt_username, newPassword);
+        console.log('[RECOVER-CREDS] New credentials synced to broker');
+      } catch (syncError: any) {
+        console.error('[RECOVER-CREDS] Failed to sync to broker:', syncError.message);
+        // Rollback database change
+        await dbPool.query(
+          `UPDATE devices SET mqtt_password = $1, mqtt_password_plain = $2, updated_at = NOW() WHERE id = $3`,
+          [device.mqtt_password, device.mqtt_password_plain, device.id]
+        );
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to sync credentials to broker',
+        });
+      }
+
+      // Log to audit
+      try {
+        await dbPool.query(`
+          INSERT INTO device_claim_audit
+          (device_id, device_mac, device_name, tenant_id, action, trigger_source, actor_ip, reason)
+          VALUES ($1, $2, $3, $4, 'credential_recovery', 'device_http', $5, 'New credentials generated - no plaintext available')
+        `, [device.id, mqttClientId, device.name, device.tenant_id, clientIP]);
+      } catch (auditError: any) {
+        console.warn('[RECOVER-CREDS] Audit log failed:', auditError.message);
+      }
+
+      console.log('========================================');
+      console.log('[RECOVER-CREDS] SUCCESS - New credentials generated');
+      console.log('[RECOVER-CREDS] Device:', device.name);
+      console.log('[RECOVER-CREDS] Method:', verificationMethod);
+      console.log('========================================');
+
+      return res.json({
+        success: true,
+        recovered: true,
+        newCredentials: true,
+        data: {
+          deviceId: device.id,
+          tenantId: device.tenant_id,
+          mqttClientId: device.mqtt_client_id,
+          mqttUsername: device.mqtt_username,
+          mqttPassword: newPassword,
+          mqttBrokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883',
+          deviceName: device.name,
+        },
+      });
+    }
+
+    // We have plaintext password - ensure it's synced to broker
+    console.log('[RECOVER-CREDS] Ensuring credentials are synced to broker...');
+    try {
+      await addMqttDevice(device.mqtt_username, device.mqtt_password_plain);
+      console.log('[RECOVER-CREDS] Credentials synced/confirmed in broker');
+    } catch (syncError: any) {
+      console.error('[RECOVER-CREDS] Failed to sync to broker:', syncError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to sync credentials to broker',
+      });
+    }
+
+    // Log to audit
+    try {
+      await dbPool.query(`
+        INSERT INTO device_claim_audit
+        (device_id, device_mac, device_name, tenant_id, action, trigger_source, actor_ip, reason)
+        VALUES ($1, $2, $3, $4, 'credential_recovery', 'device_http', $5, 'Existing credentials resynced to broker')
+      `, [device.id, mqttClientId, device.name, device.tenant_id, clientIP]);
+    } catch (auditError: any) {
+      console.warn('[RECOVER-CREDS] Audit log failed:', auditError.message);
+    }
+
+    console.log('========================================');
+    console.log('[RECOVER-CREDS] SUCCESS - Credentials recovered');
+    console.log('[RECOVER-CREDS] Device:', device.name);
+    console.log('[RECOVER-CREDS] Method:', verificationMethod);
+    console.log('[RECOVER-CREDS] Auth mode:', getAuthMode());
+    console.log('========================================');
+
+    res.json({
+      success: true,
+      recovered: true,
+      newCredentials: false,
+      data: {
+        deviceId: device.id,
+        tenantId: device.tenant_id,
+        mqttClientId: device.mqtt_client_id,
+        mqttUsername: device.mqtt_username,
+        mqttPassword: device.mqtt_password_plain,
+        mqttBrokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883',
+        deviceName: device.name,
+      },
+    });
+  } catch (error: any) {
+    console.error('========================================');
+    console.error('[RECOVER-CREDS] ERROR');
+    console.error('[RECOVER-CREDS] Error:', error.message);
+    console.error('[RECOVER-CREDS] Stack:', error.stack);
+    console.error('========================================');
+    res.status(500).json({
+      success: false,
+      error: 'Server error during credential recovery',
     });
   }
 });

@@ -4,45 +4,64 @@
 
 ---
 
-## Quick Reference
+## Current Configuration: Dynamic Security (ACTIVE)
 
-### Mosquitto Control
+**As of 2025-11-28, the system is running Docker Mosquitto with Dynamic Security.**
+
+### Quick Reference (Docker/Dynamic Security)
+
 ```bash
-# Restart
-brew services restart mosquitto
+# Restart broker
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml restart mosquitto
 
 # View logs
-tail -f /opt/homebrew/var/log/mosquitto.log
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml logs -f mosquitto
 
 # Check status
-brew services list | grep mosquitto
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml ps
 ```
 
-### File Locations
-- **Config:** `/opt/homebrew/etc/mosquitto/mosquitto.conf`
-- **Passwords:** `/opt/homebrew/etc/mosquitto/passwd`
-- **Logs:** `/opt/homebrew/var/log/mosquitto.log`
+### File Locations (Docker)
+- **Config:** `/Users/wadehargrove/Documents/MouseTrap/Server/mosquitto/config/mosquitto.conf`
+- **Credentials:** `/Users/wadehargrove/Documents/MouseTrap/Server/mosquitto/config/dynamic-security.json`
+- **Data:** `/Users/wadehargrove/Documents/MouseTrap/Server/mosquitto/data/`
+
+### Environment (.env)
+```bash
+MQTT_AUTH_MODE=dynamic_security
+MQTT_DYNSEC_BROKER_URL=mqtt://192.168.133.110:1883
+MQTT_DYNSEC_ADMIN_USER=server_admin
+MQTT_DYNSEC_ADMIN_PASS=mqtt_admin_password
+MQTT_DYNSEC_DEFAULT_ROLE=device
+```
 
 ---
 
-## Configuration
+## Fallback: Homebrew Mosquitto (Password File)
 
-### mosquitto.conf
-```conf
-listener 1883
-allow_anonymous false
-password_file /opt/homebrew/etc/mosquitto/passwd
-log_dest file /opt/homebrew/var/log/mosquitto.log
-log_type all
-persistence true
-persistence_location /opt/homebrew/var/lib/mosquitto/
-```
+If you need to revert to Homebrew Mosquitto:
 
-### Add Device Credentials
 ```bash
-mosquitto_passwd -b /opt/homebrew/etc/mosquitto/passwd <username> <password>
-brew services restart mosquitto
+# 1. Stop Docker Mosquitto
+docker compose -f /Users/wadehargrove/Documents/MouseTrap/Server/docker-compose.yml down
+
+# 2. Start Homebrew Mosquitto
+brew services start mosquitto
+
+# 3. Update .env
+MQTT_AUTH_MODE=password_file
+
+# 4. Rebuild and restart server
+cd /Users/wadehargrove/Documents/MouseTrap/Server
+npm run build && pm2 restart mqtt-server
+
+# 5. Re-claim devices (passwords won't match)
 ```
+
+### Homebrew File Locations
+- **Config:** `/opt/homebrew/etc/mosquitto/mosquitto.conf`
+- **Passwords:** `/opt/homebrew/etc/mosquitto/passwd`
+- **Logs:** `/opt/homebrew/var/log/mosquitto.log`
 
 ---
 
@@ -120,6 +139,80 @@ brew services start mosquitto
 ```bash
 sudo chown -R mosquitto:mosquitto /opt/homebrew/var/lib/mosquitto
 ```
+
+---
+
+## Dynamic Security (CURRENT)
+
+The server supports two MQTT authentication modes:
+
+| Mode | Setting | Status |
+|------|---------|--------|
+| `password_file` | Fallback | Uses Homebrew Mosquitto with passwd file |
+| `dynamic_security` | **ACTIVE** | Uses Docker Mosquitto with Dynamic Security plugin |
+
+### How Dynamic Security Works
+
+1. **Credentials via MQTT API**: Server manages credentials by publishing to `$CONTROL/dynamic-security/#`
+2. **No broker restart needed**: Changes take effect immediately
+3. **Role-based ACLs**: Devices get the `device` role with limited topic access
+
+### Dynamic Security Roles
+
+| Role | Permissions |
+|------|-------------|
+| `admin` | Full access including `$CONTROL/dynamic-security/#` |
+| `server` | Publish/subscribe to all topics (`#`) |
+| `device` | Publish/subscribe to `tenant/#` and `global/#` |
+
+### Starting Docker Mosquitto
+
+```bash
+cd /Users/wadehargrove/Documents/MouseTrap/Server
+docker-compose up -d mosquitto
+```
+
+Configuration files:
+- `mosquitto/config/mosquitto.conf`
+- `mosquitto/config/dynamic-security.json`
+
+---
+
+## Migration History: Password File → Dynamic Security
+
+**Migration completed on 2025-11-28 using Option A (Re-claim Devices)**
+
+### What Was Done
+
+1. Stopped Homebrew Mosquitto: `brew services stop mosquitto`
+2. Started Docker Mosquitto: `docker compose up -d mosquitto`
+3. Updated `.env` to `MQTT_AUTH_MODE=dynamic_security`
+4. Rebuilt and restarted server
+5. Re-claimed both devices (Kitchen, Biggy) with fresh claim codes
+
+### Implementation Details
+
+The `rotate-credentials` endpoint in `src/routes/devices.routes.ts`:
+- Updates credentials via Dynamic Security API (when in dynamic_security mode)
+- Syncs to both systems (when in password_file mode with Docker running)
+- Updates database with bcrypt hash
+- Sends `rotate_credentials` MQTT command to device
+
+The credential management functions in `src/utils/mqtt-auth.ts`:
+- `addMqttDevice()` - Creates device credentials via Dynamic Security API
+- `removeMqttDevice()` - Removes device credentials
+- `updateMqttDevicePassword()` - Updates password for existing device
+- `addToDynsecForMigration()` - Syncs credentials to Dynamic Security (used during migration)
+
+### Alternative: Option B (Parallel Rotation)
+
+For future reference, if zero-downtime migration is needed:
+
+1. Run Docker Mosquitto on port 1884 alongside Homebrew on 1883
+2. Keep `MQTT_AUTH_MODE=password_file` but set `MQTT_DYNSEC_BROKER_URL=mqtt://...:1884`
+3. Rotate credentials for each device (syncs to both systems)
+4. Switch to `dynamic_security` mode and reconfigure Docker to port 1883
+5. Requires firmware with `rotate_credentials` command support
 
 ---
 

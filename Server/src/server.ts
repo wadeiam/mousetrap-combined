@@ -79,6 +79,17 @@ mqttService.connect().catch((err: Error) => {
   });
 });
 
+// Handle MQTT errors to prevent process crash
+// In Node.js EventEmitter, unhandled 'error' events crash the process
+mqttService.on('error', (err: Error) => {
+  console.error('[MQTT] Service error (handled):', err.message);
+  logger.error('MQTT service error', {
+    error: err.message,
+    stack: err.stack,
+  });
+  // Don't crash - the service will attempt reconnection automatically
+});
+
 // Forward MQTT events to WebSocket clients
 mqttService.on('device:alert', (data: any) => {
   console.log('[WS] Forwarding device alert:', data);
@@ -121,11 +132,18 @@ mqttService.on('alert:resolved', (data: any) => {
 
 mqttService.on('snapshot', (data: any) => {
   console.log('[WS] Forwarding snapshot:', { tenantId: data.tenantId, macAddress: data.macAddress, timestamp: data.timestamp });
-  io.to(`tenant:${data.tenantId}`).emit('snapshot', {
+  const snapshotData = {
     macAddress: data.macAddress,
     imageData: data.imageData,
     timestamp: data.timestamp,
-  });
+  };
+  // Send to the device's tenant room
+  io.to(`tenant:${data.tenantId}`).emit('snapshot', snapshotData);
+  // Also send to Master Tenant room for superadmins viewing cross-tenant devices
+  const MASTER_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+  if (data.tenantId !== MASTER_TENANT_ID) {
+    io.to(`tenant:${MASTER_TENANT_ID}`).emit('snapshot', snapshotData);
+  }
 });
 
 // CORS Configuration - Parse allowed origins from environment

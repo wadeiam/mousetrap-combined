@@ -426,10 +426,54 @@ static String pendingSetupAccountPassword = "";
 static String pendingSetupDeviceName = "";
 static bool pendingSetupIsNewAccount = true;  // true = create account, false = sign in
 
+// Last setup attempt result (persisted to NVS for display after reboot)
+typedef struct {
+  bool attempted;      // Was a setup attempt made?
+  bool success;        // Did it succeed?
+  String errorCode;    // Error code (e.g., "invalid_credentials", "wifi_failed")
+  String errorMessage; // Human-readable error message
+} SetupResult;
+
+// Forward declarations
+void saveSetupResult(bool success, const String& errorCode, const String& errorMessage);
+SetupResult loadSetupResult();
+void clearSetupResult();
+
+// Setup progress tracking (for real-time SPA updates via APSTA mode)
+enum SetupState {
+  SETUP_IDLE,
+  SETUP_CONNECTING_WIFI,
+  SETUP_WIFI_CONNECTED,    // WiFi connected, waiting for registration info
+  SETUP_CHECKING_CLAIM,    // Checking if device is already claimed
+  SETUP_CLAIM_RECOVERED,   // Device was already claimed, credentials recovered
+  SETUP_SYNCING_TIME,
+  SETUP_REGISTERING,
+  SETUP_SAVING,
+  SETUP_COMPLETE,
+  SETUP_FAILED
+};
+
+static SetupState currentSetupState = SETUP_IDLE;
+static String currentSetupStep = "";
+static String currentSetupError = "";
+static String currentSetupErrorCode = "";
+static bool setupNeedsReboot = false;
+static String recoveredDeviceName = "";  // Name of device if claim was recovered
+
+// Two-phase setup: test WiFi first, then register
+static bool pendingWiFiTest = false;
+static unsigned long pendingWiFiTestTime = 0;
+static String pendingWiFiTestSSID = "";
+static String pendingWiFiTestPassword = "";
+
+static bool pendingRegistration = false;
+static unsigned long pendingRegistrationTime = 0;
+
 // Cached WiFi scan results for captive portal
 struct CachedNetwork {
   String ssid;
   int rssi;
+  int channel;  // WiFi channel for AP optimization
 };
 static std::vector<CachedNetwork> cachedNetworks;
 static bool wifiScanInProgress = false;
@@ -2422,6 +2466,13 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   // Handle device revocation - REQUIRES TOKEN VERIFICATION
   if (strstr(topic, "/revoke")) {
+    // Ignore empty retained "clear" messages (payload is null or empty)
+    // These are published when a device is claimed to clear old revoke messages
+    if (length == 0 || doc.isNull() || (length == 4 && memcmp(payload, "null", 4) == 0)) {
+      // Silently ignore - this is normal for claimed devices
+      return;
+    }
+
     Serial.println("[MQTT-REVOKE] ========================================");
     Serial.println("[MQTT-REVOKE] REVOCATION COMMAND RECEIVED FROM SERVER");
     Serial.println("[MQTT-REVOKE] ========================================");
@@ -2565,6 +2616,83 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         } else {
           Serial.println("[MQTT-TENANT] ERROR: Missing required fields (tenantId, deviceId)");
           addSystemLog("[MQTT-TENANT] ERROR: Invalid update_tenant command - missing fields");
+        }
+      } else if (strcmp(cmd, "rotate_credentials") == 0) {
+        // Rotate MQTT credentials - ACK-based rotation for Dynamic Security
+        // CRITICAL: Must publish ACK BEFORE disconnecting so server knows to update broker
+        Serial.println("[MQTT-ROTATE] ========================================");
+        Serial.println("[MQTT-ROTATE] CREDENTIAL ROTATION COMMAND RECEIVED");
+        Serial.println("[MQTT-ROTATE] ========================================");
+
+        const char* newPassword = doc["password"];
+        const char* rotationId = doc["rotationId"];  // Track the rotation operation
+
+        if (newPassword && strlen(newPassword) > 0) {
+          Serial.printf("[MQTT-ROTATE] Rotation ID: %s\n", rotationId ? rotationId : "none");
+          Serial.println("[MQTT-ROTATE] Updating MQTT password...");
+          addSystemLog("[MQTT-ROTATE] Updating MQTT credentials");
+
+          // Store old tenant/topic info for ACK
+          String oldTenantId = claimedTenantId;
+          String oldClientId = claimedMqttClientId;
+
+          // Update password in memory
+          claimedMqttPassword = String(newPassword);
+
+          // Persist to NVS FIRST - this is critical!
+          devicePrefs.begin("device", false);
+          devicePrefs.putString("mqttPassword", claimedMqttPassword);
+          devicePrefs.end();
+
+          Serial.println("[MQTT-ROTATE] New credentials saved to NVS");
+          addSystemLog("[MQTT-ROTATE] Credentials saved to NVS");
+
+          // CRITICAL: Publish ACK BEFORE disconnecting
+          // Server waits for this ACK before updating broker credentials
+          if (rotationId && strlen(rotationId) > 0) {
+            char ackTopic[256];
+            snprintf(ackTopic, sizeof(ackTopic), "tenant/%s/device/%s/rotation_ack",
+                     oldTenantId.c_str(), oldClientId.c_str());
+
+            StaticJsonDocument<256> ackDoc;
+            ackDoc["rotationId"] = rotationId;
+            ackDoc["success"] = true;
+            String ackPayload;
+            serializeJson(ackDoc, ackPayload);
+
+            Serial.printf("[MQTT-ROTATE] Publishing ACK to %s\n", ackTopic);
+            bool ackSent = mqttClient.publish(ackTopic, ackPayload.c_str());
+
+            // Process the MQTT client loop to ensure ACK is sent
+            mqttClient.loop();
+            delay(100);  // Small delay to ensure message is transmitted
+            mqttClient.loop();
+
+            if (ackSent) {
+              Serial.println("[MQTT-ROTATE] ACK published successfully");
+              addSystemLog("[MQTT-ROTATE] ACK sent, waiting for broker update...");
+            } else {
+              Serial.println("[MQTT-ROTATE] WARNING: Failed to publish ACK");
+              addSystemLog("[MQTT-ROTATE] WARNING: ACK publish failed");
+            }
+          } else {
+            Serial.println("[MQTT-ROTATE] WARNING: No rotationId - cannot send ACK");
+            addSystemLog("[MQTT-ROTATE] WARNING: No rotationId provided");
+          }
+
+          // Now disconnect - server should have received ACK and updated broker
+          Serial.println("[MQTT-ROTATE] Disconnecting to reconnect with new credentials...");
+          mqttClient.disconnect();
+          mqttReallyConnected = false;
+          lastMqttReconnect = 0;  // Force immediate reconnect
+
+          Serial.println("[MQTT-ROTATE] ========================================");
+          Serial.println("[MQTT-ROTATE] Credential rotation complete");
+          Serial.println("[MQTT-ROTATE] Device will reconnect with new password");
+          Serial.println("[MQTT-ROTATE] ========================================");
+        } else {
+          Serial.println("[MQTT-ROTATE] ERROR: Missing password in rotation command");
+          addSystemLog("[MQTT-ROTATE] ERROR: Invalid rotate_credentials - missing password");
         }
       }
     }
@@ -3805,17 +3933,11 @@ void performFactoryReset() {
   // Clear WiFi credentials from NVS
   clearWiFiCredentials();
 
-  // Clear device claim status and MQTT credentials
-  Serial.println("[FACTORY-RESET] Clearing device claim status...");
-
-  // Call unclaimDevice() if device was claimed (notifies server)
-  if (deviceClaimed) {
-    Serial.println("[FACTORY-RESET] Device was claimed, calling unclaimDevice()...");
-    unclaimDeviceWithSource("factory_reset");
-  } else {
-    // Just clear the credentials directly if not claimed
-    clearClaimedCredentials();
-  }
+  // Clear device claim status and MQTT credentials (LOCAL ONLY)
+  // NOTE: Do NOT notify server - this allows device to recover its claim
+  // If user wants to truly unclaim, they should use the dashboard
+  Serial.println("[FACTORY-RESET] Clearing local credentials (server claim preserved for recovery)...");
+  clearClaimedCredentials();
 
   // Ensure deviceClaimed is false
   deviceClaimed = false;
@@ -9071,6 +9193,222 @@ void setupEndpoints() {
   // Setup Connect Endpoint (for Captive Portal - handles full setup flow)
   // ============================================================================
   // CORS preflight handler for setup endpoints
+  // ============================================================================
+  // Setup Status Endpoint - Returns last setup attempt result
+  // ============================================================================
+  server.on("/api/setup/status", HTTP_GET, [](AsyncWebServerRequest* req) {
+    SetupResult result = loadSetupResult();
+
+    JsonDocument doc;
+    doc["attempted"] = result.attempted;
+    doc["success"] = result.success;
+    doc["errorCode"] = result.errorCode;
+    doc["errorMessage"] = result.errorMessage;
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  // Clear setup status (called after user acknowledges error)
+  server.on("/api/setup/status/clear", HTTP_POST, [](AsyncWebServerRequest* req) {
+    clearSetupResult();
+    req->send(200, "application/json", "{\"success\":true}");
+  });
+
+  // Setup Progress Endpoint - Real-time status for SPA polling during APSTA setup
+  server.on("/api/setup/progress", HTTP_GET, [](AsyncWebServerRequest* req) {
+    JsonDocument doc;
+
+    const char* stateStr = "idle";
+    switch (currentSetupState) {
+      case SETUP_IDLE: stateStr = "idle"; break;
+      case SETUP_CONNECTING_WIFI: stateStr = "connecting_wifi"; break;
+      case SETUP_WIFI_CONNECTED: stateStr = "wifi_connected"; break;
+      case SETUP_CHECKING_CLAIM: stateStr = "checking_claim"; break;
+      case SETUP_CLAIM_RECOVERED: stateStr = "claim_recovered"; break;
+      case SETUP_SYNCING_TIME: stateStr = "syncing_time"; break;
+      case SETUP_REGISTERING: stateStr = "registering"; break;
+      case SETUP_SAVING: stateStr = "saving"; break;
+      case SETUP_COMPLETE: stateStr = "complete"; break;
+      case SETUP_FAILED: stateStr = "failed"; break;
+    }
+
+    doc["state"] = stateStr;
+    doc["step"] = currentSetupStep;
+    doc["error"] = currentSetupError;
+    doc["errorCode"] = currentSetupErrorCode;
+    doc["needsReboot"] = setupNeedsReboot;
+    doc["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
+    doc["staIP"] = WiFi.localIP().toString();
+    if (recoveredDeviceName.length() > 0) {
+      doc["recoveredDeviceName"] = recoveredDeviceName;
+    }
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  // Reset setup state (allow retry without reboot)
+  server.on("/api/setup/reset", HTTP_POST, [](AsyncWebServerRequest* req) {
+    currentSetupState = SETUP_IDLE;
+    currentSetupStep = "";
+    currentSetupError = "";
+    currentSetupErrorCode = "";
+    setupNeedsReboot = false;
+    pendingSetup = false;
+
+    // If we're in APSTA mode and failed, disconnect STA but keep AP
+    if (WiFi.getMode() == WIFI_AP_STA) {
+      WiFi.disconnect(true);  // Disconnect from STA network
+      delay(100);
+      WiFi.mode(WIFI_AP);     // Switch back to AP-only mode
+    }
+
+    req->send(200, "application/json", "{\"success\":true}");
+  });
+
+  // Trigger reboot (called after successful setup)
+  server.on("/api/setup/reboot", HTTP_POST, [](AsyncWebServerRequest* req) {
+    req->send(200, "application/json", "{\"success\":true,\"message\":\"Rebooting...\"}");
+    delay(500);
+    ESP.restart();
+  });
+
+  // ============================================================================
+  // Test WiFi endpoint - Connect to WiFi only, stay in AP+STA mode
+  // Phase 1 of two-phase setup: test WiFi before asking for account info
+  // ============================================================================
+  server.on("/api/setup/test-wifi", HTTP_OPTIONS, [](AsyncWebServerRequest* req) {
+    Serial.println("[CORS] OPTIONS preflight for /api/setup/test-wifi");
+    req->send(200);
+  });
+  server.on("/api/setup/test-wifi", HTTP_POST, [](AsyncWebServerRequest* req){}, NULL,
+    [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+      if (index == 0) req->_tempObject = (void*)new String();
+      String* body = (String*)req->_tempObject;
+      body->concat((char*)data, len);
+
+      if (index + len == total) {
+        addSystemLog("[SETUP-WIFI] === TEST WIFI REQUEST RECEIVED ===");
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, *body);
+        delete body;
+        req->_tempObject = nullptr;
+
+        if (err) {
+          addSystemLog("[SETUP-WIFI] ERROR: Invalid JSON");
+          req->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+          return;
+        }
+
+        String ssid = doc["ssid"] | "";
+        String password = doc["password"] | "";
+
+        addSystemLog("[SETUP-WIFI] SSID: " + ssid);
+
+        if (ssid.isEmpty()) {
+          addSystemLog("[SETUP-WIFI] ERROR: Missing SSID");
+          req->send(400, "application/json", "{\"success\":false,\"error\":\"Missing required field: ssid\"}");
+          return;
+        }
+
+        // Store pending WiFi test (will be processed in loop())
+        pendingWiFiTestSSID = ssid;
+        pendingWiFiTestPassword = password;
+        pendingWiFiTestTime = millis();
+        pendingWiFiTest = true;
+
+        // Reset state
+        currentSetupState = SETUP_IDLE;
+        currentSetupError = "";
+        currentSetupErrorCode = "";
+
+        addSystemLog("[SETUP-WIFI] WiFi test queued");
+
+        JsonDocument response;
+        response["success"] = true;
+        response["message"] = "WiFi test initiated";
+        String json;
+        serializeJson(response, json);
+        req->send(200, "application/json", json);
+      }
+    }
+  );
+
+  // ============================================================================
+  // Register endpoint - Complete registration (assumes WiFi already connected)
+  // Phase 2 of two-phase setup: register device after WiFi is confirmed working
+  // ============================================================================
+  server.on("/api/setup/register", HTTP_OPTIONS, [](AsyncWebServerRequest* req) {
+    Serial.println("[CORS] OPTIONS preflight for /api/setup/register");
+    req->send(200);
+  });
+  server.on("/api/setup/register", HTTP_POST, [](AsyncWebServerRequest* req){}, NULL,
+    [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+      if (index == 0) req->_tempObject = (void*)new String();
+      String* body = (String*)req->_tempObject;
+      body->concat((char*)data, len);
+
+      if (index + len == total) {
+        addSystemLog("[SETUP-REG] === REGISTER REQUEST RECEIVED ===");
+
+        // Check if WiFi is connected
+        if (WiFi.status() != WL_CONNECTED) {
+          addSystemLog("[SETUP-REG] ERROR: WiFi not connected");
+          req->send(400, "application/json", "{\"success\":false,\"error\":\"WiFi not connected. Test WiFi first.\"}");
+          return;
+        }
+
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, *body);
+        delete body;
+        req->_tempObject = nullptr;
+
+        if (err) {
+          addSystemLog("[SETUP-REG] ERROR: Invalid JSON");
+          req->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid JSON\"}");
+          return;
+        }
+
+        String email = doc["email"] | "";
+        String accountPassword = doc["accountPassword"] | "";
+        String deviceName = doc["deviceName"] | "";
+        bool isNewAccount = doc["isNewAccount"] | true;
+
+        addSystemLog("[SETUP-REG] Email: " + email);
+        addSystemLog("[SETUP-REG] Device: " + deviceName);
+        addSystemLog("[SETUP-REG] NewAccount: " + String(isNewAccount ? "true" : "false"));
+
+        if (email.isEmpty() || accountPassword.isEmpty() || deviceName.isEmpty()) {
+          addSystemLog("[SETUP-REG] ERROR: Missing required fields");
+          req->send(400, "application/json",
+            "{\"success\":false,\"error\":\"Missing required fields: email, accountPassword, deviceName\"}");
+          return;
+        }
+
+        // Store registration data (WiFi creds already stored from test-wifi)
+        pendingSetupEmail = email;
+        pendingSetupAccountPassword = accountPassword;
+        pendingSetupDeviceName = deviceName;
+        pendingSetupIsNewAccount = isNewAccount;
+        pendingRegistrationTime = millis();
+        pendingRegistration = true;
+
+        addSystemLog("[SETUP-REG] Registration queued");
+
+        JsonDocument response;
+        response["success"] = true;
+        response["message"] = "Registration initiated";
+        String json;
+        serializeJson(response, json);
+        req->send(200, "application/json", json);
+      }
+    }
+  );
+
   server.on("/api/setup/connect", HTTP_OPTIONS, [](AsyncWebServerRequest* req) {
     Serial.println("[CORS] OPTIONS preflight for /api/setup/connect");
     req->send(200);
@@ -10411,18 +10749,22 @@ void setup() {
   for (int i = 0; i < scanCount && i < 20; i++) {
     String ssid = WiFi.SSID(i);
     int rssi = WiFi.RSSI(i);
+    int channel = WiFi.channel(i);
     if (ssid.length() > 0) {
       bool found = false;
       for (auto& net : cachedNetworks) {
         if (net.ssid == ssid) {
           found = true;
-          if (rssi > net.rssi) net.rssi = rssi;
+          if (rssi > net.rssi) {
+            net.rssi = rssi;
+            net.channel = channel;  // Update channel if stronger signal
+          }
           break;
         }
       }
       if (!found) {
-        cachedNetworks.push_back({ssid, rssi});
-        Serial.printf("[WIFI-SCAN]   %s (%d dBm)\n", ssid.c_str(), rssi);
+        cachedNetworks.push_back({ssid, rssi, channel});
+        Serial.printf("[WIFI-SCAN]   %s (%d dBm, ch %d)\n", ssid.c_str(), rssi, channel);
       }
     }
   }
@@ -10788,16 +11130,27 @@ void setup() {
 
     WiFi.mode(WIFI_AP_STA);
     String apName = "MouseTrap-" + lastMacOctet;
-    WiFi.softAP(apName.c_str());
+
+    // Start AP on the strongest network's channel (from boot scan)
+    // This prevents channel-change disconnects during setup
+    int apChannel = 1;  // Default channel
+    if (!cachedNetworks.empty()) {
+      apChannel = cachedNetworks[0].channel;
+      Serial.printf("[AP MODE] Using channel %d (strongest network: %s)\n",
+                    apChannel, cachedNetworks[0].ssid.c_str());
+      addSystemLog("[AP MODE] Starting on ch " + String(apChannel) + " (" + cachedNetworks[0].ssid + ")");
+    }
+    WiFi.softAP(apName.c_str(), "", apChannel);
 
     IPAddress apIP = WiFi.softAPIP();
     Serial.print("[AP MODE] Access Point started: ");
     Serial.println(apName);
     Serial.print("[AP MODE] IP address: ");
     Serial.println(apIP);
+    Serial.printf("[AP MODE] Channel: %d\n", apChannel);
     Serial.println("[AP MODE] Connect to this network and navigate to http://192.168.4.1/setup");
 
-    addSystemLog("[AP MODE] Started AP: " + apName + " @ " + apIP.toString());
+    addSystemLog("[AP MODE] Started AP: " + apName + " @ " + apIP.toString() + " ch " + String(apChannel));
     addSystemLog("[AP MODE] Visit http://192.168.4.1/setup to configure");
 
     isAPMode = true;
@@ -11212,66 +11565,314 @@ bool captureAndStorePhoto() {
 }
 
 // ============================================================================
-// Process Pending Setup from Captive Portal
-// Called from loop() after setup request is received via /api/setup/connect
+// Setup Result Functions - Save/Load/Clear setup attempt results
 // ============================================================================
-void processPendingSetup() {
-  if (!pendingSetup) return;
+void saveSetupResult(bool success, const String& errorCode, const String& errorMessage) {
+  Preferences prefs;
+  prefs.begin("setup", false);
+  prefs.putBool("attempted", true);
+  prefs.putBool("success", success);
+  prefs.putString("errorCode", errorCode);
+  prefs.putString("errorMsg", errorMessage);
+  prefs.end();
+  addSystemLog("[SETUP] Saved result: success=" + String(success ? "true" : "false") + ", error=" + errorCode);
+}
+
+SetupResult loadSetupResult() {
+  SetupResult result = {false, false, "", ""};
+  Preferences prefs;
+  prefs.begin("setup", true);  // Read-only
+  result.attempted = prefs.getBool("attempted", false);
+  result.success = prefs.getBool("success", false);
+  result.errorCode = prefs.getString("errorCode", "");
+  result.errorMessage = prefs.getString("errorMsg", "");
+  prefs.end();
+  return result;
+}
+
+void clearSetupResult() {
+  Preferences prefs;
+  prefs.begin("setup", false);
+  prefs.clear();
+  prefs.end();
+}
+
+// ============================================================================
+// Try to recover claim from server (device may have lost NVS but server has record)
+// Returns true if claim was recovered and credentials saved to NVS
+// ============================================================================
+bool tryRecoverClaim() {
+  // Sync NTP time first (needed for claim token)
+  addSystemLog("[RECOVER] Syncing NTP time for claim token...");
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+  const time_t MIN_VALID_TIME = 1577836800;  // Jan 1, 2020
+  int ntpAttempts = 0;
+  while (time(nullptr) < MIN_VALID_TIME && ntpAttempts < 10) {
+    delay(500);
+    ntpAttempts++;
+  }
+
+  if (time(nullptr) < MIN_VALID_TIME) {
+    addSystemLog("[RECOVER] NTP sync failed - cannot generate claim token");
+    return false;
+  }
+
+  // Generate claim token
+  time_t now = time(nullptr);
+  String timestamp = String(now);
+  String mac = g_macUpper;  // XX:XX:XX:XX:XX:XX format
+
+  // HMAC-SHA256(MAC:timestamp, secret)
+  String data = mac + ":" + timestamp;
+  uint8_t hash[32];
+  mbedtls_md_context_t ctx;
+  mbedtls_md_init(&ctx);
+  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
+  mbedtls_md_hmac_starts(&ctx, (const unsigned char*)DEVICE_CLAIM_SECRET, strlen(DEVICE_CLAIM_SECRET));
+  mbedtls_md_hmac_update(&ctx, (const unsigned char*)data.c_str(), data.length());
+  mbedtls_md_hmac_finish(&ctx, hash);
+  mbedtls_md_free(&ctx);
+
+  String claimToken = "";
+  for (int i = 0; i < 32; i++) {
+    char hex[3];
+    sprintf(hex, "%02x", hash[i]);
+    claimToken += hex;
+  }
+
+  // Call server recover-claim endpoint
+  String serverUrl = String(CLAIM_SERVER_URL) + "/api/setup/recover-claim";
+  addSystemLog("[RECOVER] Calling server: " + serverUrl);
+
+  HTTPClient http;
+  http.begin(serverUrl);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(10000);
+
+  JsonDocument reqDoc;
+  reqDoc["mac"] = mac;
+  reqDoc["claimToken"] = claimToken;
+  reqDoc["timestamp"] = timestamp;
+
+  String reqBody;
+  serializeJson(reqDoc, reqBody);
+
+  int httpCode = http.POST(reqBody);
+  addSystemLog("[RECOVER] HTTP response code: " + String(httpCode));
+
+  if (httpCode != 200) {
+    // Device not claimed or error - need full registration
+    String response = http.getString();
+    addSystemLog("[RECOVER] Not claimed or error: " + response);
+    http.end();
+    return false;
+  }
+
+  // Parse response
+  String response = http.getString();
+  http.end();
+
+  JsonDocument respDoc;
+  DeserializationError err = deserializeJson(respDoc, response);
+  if (err) {
+    addSystemLog("[RECOVER] JSON parse error: " + String(err.c_str()));
+    return false;
+  }
+
+  if (!respDoc["success"].as<bool>() || !respDoc["recovered"].as<bool>()) {
+    addSystemLog("[RECOVER] Server returned success=false");
+    return false;
+  }
+
+  // Extract credentials
+  String deviceId = respDoc["deviceId"].as<String>();
+  String tenantId = respDoc["tenantId"].as<String>();
+  String mqttClientId = respDoc["mqttClientId"].as<String>();
+  String mqttBroker = respDoc["mqttBroker"].as<String>();
+  String mqttUsername = respDoc["mqttCredentials"]["username"].as<String>();
+  String mqttPassword = respDoc["mqttCredentials"]["password"].as<String>();
+  String deviceName = respDoc["deviceName"].as<String>();
+
+  addSystemLog("[RECOVER] Claim recovered! Device: " + deviceName);
+  addSystemLog("[RECOVER] Tenant: " + tenantId);
+
+  // Save credentials to NVS (same format as processPendingRegistration)
+  currentSetupStep = "Saving recovered credentials...";
+  currentSetupState = SETUP_SAVING;
+
+  // Save device/claim credentials
+  Preferences prefs;
+  prefs.begin("device", false);
+  prefs.putBool("claimed", true);
+  prefs.putString("deviceId", deviceId);
+  prefs.putString("tenantId", tenantId);
+  prefs.putString("mqttClientId", mqttClientId);
+  prefs.putString("mqttBroker", mqttBroker);
+  prefs.putString("mqttUsername", mqttUsername);
+  prefs.putString("mqttPassword", mqttPassword);
+  prefs.putString("deviceName", deviceName);
+  prefs.end();
+
+  // Save WiFi credentials
+  prefs.begin("wifi", false);
+  prefs.putString("ssid", pendingSetupSSID);
+  prefs.putString("password", pendingSetupPassword);
+  prefs.end();
+
+  addSystemLog("[RECOVER] Credentials saved to NVS");
+
+  // Update global state
+  deviceClaimed = true;
+  claimedDeviceId = deviceId;
+  claimedTenantId = tenantId;
+  claimedMqttClientId = mqttClientId;
+  claimedMqttBroker = mqttBroker;
+  claimedMqttUsername = mqttUsername;
+  claimedMqttPassword = mqttPassword;
+  claimedDeviceName = deviceName;
+
+  // Set recovered state for SPA
+  recoveredDeviceName = deviceName;
+  currentSetupState = SETUP_CLAIM_RECOVERED;
+  currentSetupStep = "Connection restored! Device \"" + deviceName + "\" is ready.";
+  setupNeedsReboot = true;
+
+  addSystemLog("[RECOVER] ====== CLAIM RECOVERED SUCCESSFULLY ======");
+
+  // Connect to MQTT now that we have credentials
+  mqttSetup();
+  mqttConnect();
+
+  // Turn off AP mode - device is now claimed and connected
+  addSystemLog("[RECOVER] Disabling AP mode - device is claimed");
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  isAPMode = false;
+
+  addSystemLog("[RECOVER] Device is now in station mode, connected to WiFi and MQTT");
+  return true;
+}
+
+// ============================================================================
+// Process Pending WiFi Test (Phase 1 of two-phase setup)
+// Connect to WiFi in AP+STA mode, stay connected for registration
+// ============================================================================
+void processPendingWiFiTest() {
+  if (!pendingWiFiTest) return;
 
   // Wait a bit for HTTP response to be fully sent
-  if (millis() - pendingSetupTime < 500) return;
+  if (millis() - pendingWiFiTestTime < 500) return;
 
-  pendingSetup = false;  // Clear flag first to prevent re-entry
+  pendingWiFiTest = false;  // Clear flag first to prevent re-entry
 
-  // ===== STEP 1: Log setup start =====
-  addSystemLog("[SETUP] ====== STARTING SETUP PROCESS ======");
-  addSystemLog("[SETUP] Step 1: Received setup request");
-  addSystemLog("[SETUP] SSID: " + pendingSetupSSID);
-  addSystemLog("[SETUP] Email: " + pendingSetupEmail);
-  addSystemLog("[SETUP] Device: " + pendingSetupDeviceName);
-  addSystemLog("[SETUP] NewAccount: " + String(pendingSetupIsNewAccount ? "true" : "false"));
+  // Reset state
+  currentSetupState = SETUP_CONNECTING_WIFI;
+  currentSetupStep = "Connecting to WiFi...";
+  currentSetupError = "";
+  currentSetupErrorCode = "";
 
-  // ===== STEP 2: Shut down AP and switch to STA-only mode =====
-  // AP+STA mode causes networking issues on ESP32-S3, so we fully disconnect AP first
-  addSystemLog("[SETUP] Step 2: Shutting down AP and switching to STA mode...");
-  WiFi.softAPdisconnect(true);
+  addSystemLog("[WIFI-TEST] ====== STARTING WIFI TEST ======");
+  addSystemLog("[WIFI-TEST] SSID: " + pendingWiFiTestSSID);
+
+  // ===== STEP 0: Disconnect any previous WiFi connection =====
+  addSystemLog("[WIFI-TEST] Disconnecting any previous connection...");
+  WiFi.disconnect(true);  // true = also clear stored credentials
   delay(100);
-  WiFi.mode(WIFI_STA);
-  delay(500);  // Allow mode switch to settle
-  addSystemLog("[SETUP] Step 2 OK: Now in STA-only mode");
 
-  // ===== STEP 3: Connect to WiFi =====
-  addSystemLog("[SETUP] Step 3: Connecting to WiFi...");
-  WiFi.begin(pendingSetupSSID.c_str(), pendingSetupPassword.c_str());
+  // AP is already on the correct channel (started on strongest network's channel at boot)
+  // No need to scan or change channels - this keeps the phone connected!
+  currentSetupStep = "Connecting to WiFi...";
+  addSystemLog("[WIFI-TEST] AP channel: " + String(WiFi.channel()) + " (set at boot from strongest network)");
+
+  // Ensure we're in AP+STA mode (should already be, but be safe)
+  if (WiFi.getMode() != WIFI_AP_STA) {
+    WiFi.mode(WIFI_AP_STA);
+    delay(100);
+  }
+
+  // ===== STEP 1: Connect to WiFi (STA) =====
+  addSystemLog("[WIFI-TEST] Connecting to WiFi: " + pendingWiFiTestSSID);
+  WiFi.begin(pendingWiFiTestSSID.c_str(), pendingWiFiTestPassword.c_str());
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {  // 20 * 500ms = 10 seconds max
     delay(500);
     attempts++;
+    if (attempts % 4 == 0) {
+      currentSetupStep = "Connecting to WiFi... (" + String(attempts / 2) + "s)";
+    }
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    addSystemLog("[SETUP] Step 3 FAILED: WiFi connection failed after " + String(attempts) + " attempts");
-    addSystemLog("[SETUP] WiFi status code: " + String(WiFi.status()));
-    addSystemLog("[SETUP] Restarting to re-enter AP mode...");
-    delay(1000);
-    ESP.restart();
+    addSystemLog("[WIFI-TEST] WiFi connection failed after " + String(attempts * 500 / 1000) + " seconds");
+    addSystemLog("[WIFI-TEST] WiFi status code: " + String(WiFi.status()));
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "Could not connect to WiFi network. Check password and try again.";
+    currentSetupErrorCode = "wifi_failed";
+    currentSetupStep = "WiFi connection failed";
+    // Stay in AP+STA mode so user can retry
     return;
   }
 
-  addSystemLog("[SETUP] Step 3 OK: WiFi connected");
-  addSystemLog("[SETUP] IP Address: " + WiFi.localIP().toString());
+  addSystemLog("[WIFI-TEST] WiFi connected, IP: " + WiFi.localIP().toString());
 
-  // Give WiFi stack time to fully initialize (DHCP, routes, etc.)
-  addSystemLog("[SETUP] Step 3.5: Waiting for network stack to stabilize...");
-  delay(3000);
-  addSystemLog("[SETUP] Step 3.5 OK: Network should be stable");
+  // Store the working credentials for registration phase
+  pendingSetupSSID = pendingWiFiTestSSID;
+  pendingSetupPassword = pendingWiFiTestPassword;
 
-  // ===== STEP 4: Sync NTP time =====
-  addSystemLog("[SETUP] Step 4: Syncing NTP time...");
+  addSystemLog("[WIFI-TEST] ====== WIFI TEST SUCCESSFUL ======");
+
+  // ===== STEP 4: Check if device is already claimed on server =====
+  // If so, recover credentials and skip account setup
+  currentSetupState = SETUP_CHECKING_CLAIM;
+  currentSetupStep = "Checking device status...";
+  addSystemLog("[WIFI-TEST] Checking if device is already claimed...");
+
+  if (tryRecoverClaim()) {
+    // Claim was recovered - device is already set up!
+    addSystemLog("[WIFI-TEST] Claim recovered - skipping account setup");
+    return;
+  }
+
+  // Device is not claimed - proceed to account setup
+  currentSetupState = SETUP_WIFI_CONNECTED;
+  currentSetupStep = "WiFi connected! Ready for account setup.";
+  addSystemLog("[WIFI-TEST] Device not claimed - needs account setup");
+}
+
+// ============================================================================
+// Process Pending Registration (Phase 2 of two-phase setup)
+// Complete registration after WiFi is confirmed working
+// ============================================================================
+void processPendingRegistration() {
+  if (!pendingRegistration) return;
+
+  // Wait a bit for HTTP response to be fully sent
+  if (millis() - pendingRegistrationTime < 500) return;
+
+  pendingRegistration = false;  // Clear flag first to prevent re-entry
+
+  addSystemLog("[REGISTER] ====== STARTING REGISTRATION ======");
+  addSystemLog("[REGISTER] Email: " + pendingSetupEmail);
+  addSystemLog("[REGISTER] Device: " + pendingSetupDeviceName);
+
+  // WiFi should already be connected from test-wifi phase
+  if (WiFi.status() != WL_CONNECTED) {
+    addSystemLog("[REGISTER] ERROR: WiFi not connected!");
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "WiFi disconnected. Please test WiFi connection again.";
+    currentSetupErrorCode = "wifi_disconnected";
+    currentSetupStep = "WiFi not connected";
+    return;
+  }
+
+  // ===== STEP 1: Sync NTP time =====
+  currentSetupState = SETUP_SYNCING_TIME;
+  currentSetupStep = "Syncing time...";
+  addSystemLog("[REGISTER] Syncing NTP time...");
   configTime(0, 0, "pool.ntp.org", "time.nist.gov");
 
-  // Wait for NTP to actually sync (time must be after 2020)
   const time_t MIN_VALID_TIME = 1577836800;  // Jan 1, 2020
   int ntpAttempts = 0;
   time_t now = time(nullptr);
@@ -11280,68 +11881,31 @@ void processPendingSetup() {
     now = time(nullptr);
     ntpAttempts++;
     if (ntpAttempts % 4 == 0) {
-      addSystemLog("[SETUP] Step 4: Waiting for NTP... attempt " + String(ntpAttempts));
+      currentSetupStep = "Syncing time... (" + String(ntpAttempts * 500 / 1000) + "s)";
     }
   }
 
   if (now < MIN_VALID_TIME) {
-    addSystemLog("[SETUP] Step 4 FAILED: NTP sync timeout, epoch=" + String((unsigned long)now));
-    addSystemLog("[SETUP] Restarting to retry...");
-    delay(1000);
-    ESP.restart();
+    addSystemLog("[REGISTER] NTP sync timeout, epoch=" + String((unsigned long)now));
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "Could not sync time with internet. Check your network connection.";
+    currentSetupErrorCode = "ntp_failed";
+    currentSetupStep = "Time sync failed";
     return;
   }
 
-  addSystemLog("[SETUP] Step 4 OK: Time synced, epoch: " + String((unsigned long)now));
+  addSystemLog("[REGISTER] Time synced, epoch: " + String((unsigned long)now));
 
-  // ===== STEP 5: Generate claim token =====
-  addSystemLog("[SETUP] Step 5: Generating claim credentials...");
+  // ===== STEP 2: Generate claim token =====
+  currentSetupState = SETUP_REGISTERING;
+  currentSetupStep = "Registering device...";
+  addSystemLog("[REGISTER] Generating claim credentials...");
   ClaimCredentials creds = generateClaimCredentials();
-  addSystemLog("[SETUP] Step 5 OK: MAC=" + String(creds.mac) + ", timestamp=" + String(creds.timestamp));
+  addSystemLog("[REGISTER] MAC=" + String(creds.mac) + ", timestamp=" + String(creds.timestamp));
 
-  // ===== STEP 6: Call server =====
-  // Test connectivity first
-  addSystemLog("[SETUP] Step 5.6: Testing connectivity...");
-  addSystemLog("[SETUP] Gateway: " + WiFi.gatewayIP().toString());
-  addSystemLog("[SETUP] DNS: " + WiFi.dnsIP().toString());
-  addSystemLog("[SETUP] Local IP: " + WiFi.localIP().toString());
-  addSystemLog("[SETUP] WiFi status: " + String(WiFi.status()));
-
-  // Test internet HTTP first
-  HTTPClient inetHttp;
-  inetHttp.begin("http://httpbin.org/ip");
-  inetHttp.setTimeout(5000);
-  int inetCode = inetHttp.GET();
-  addSystemLog("[SETUP] Step 5.6a: Internet HTTP test: " + String(inetCode));
-  if (inetCode > 0) {
-    addSystemLog("[SETUP] Step 5.6a: Response: " + inetHttp.getString().substring(0, 50));
-  }
-  inetHttp.end();
-
-  // Test raw TCP connection to local server
-  WiFiClient tcpTest;
-  addSystemLog("[SETUP] Step 5.6b: Testing TCP to 192.168.133.110:4000...");
-  if (tcpTest.connect("192.168.133.110", 4000)) {
-    addSystemLog("[SETUP] Step 5.6b: TCP connect SUCCESS!");
-    tcpTest.stop();
-  } else {
-    addSystemLog("[SETUP] Step 5.6b: TCP connect FAILED");
-  }
-
-  // Test local server health endpoint
-  HTTPClient testHttp;
-  testHttp.begin("http://192.168.133.110:4000/health");
-  testHttp.setTimeout(5000);
-  int testCode = testHttp.GET();
-  addSystemLog("[SETUP] Step 5.6c: Local health check: " + String(testCode));
-  if (testCode > 0) {
-    addSystemLog("[SETUP] Step 5.6c: Response: " + testHttp.getString());
-  }
-  testHttp.end();
-
+  // ===== STEP 3: Call server =====
   String url = String(CLAIM_SERVER_URL) + "/api/setup/register-and-claim";
-  addSystemLog("[SETUP] Step 6: Calling server...");
-  addSystemLog("[SETUP] URL: " + url);
+  addSystemLog("[REGISTER] Calling server: " + url);
 
   HTTPClient http;
   http.begin(url);
@@ -11359,29 +11923,299 @@ void processPendingSetup() {
 
   String reqBody;
   serializeJson(reqDoc, reqBody);
-  addSystemLog("[SETUP] Request (no password): email=" + pendingSetupEmail + ", device=" + pendingSetupDeviceName);
 
   int httpCode = http.POST(reqBody);
-  addSystemLog("[SETUP] Step 6: HTTP response code: " + String(httpCode));
+  addSystemLog("[REGISTER] HTTP response code: " + String(httpCode));
 
   if (httpCode == 200 || httpCode == 201) {
     String response = http.getString();
-    addSystemLog("[SETUP] Step 6 OK: Got success response");
+    addSystemLog("[REGISTER] Got success response");
+
+    JsonDocument resDoc;
+    DeserializationError err = deserializeJson(resDoc, response);
+
+    if (err) {
+      addSystemLog("[REGISTER] ERROR: Could not parse server response");
+      currentSetupState = SETUP_FAILED;
+      currentSetupError = "Invalid response from server.";
+      currentSetupErrorCode = "invalid_response";
+      currentSetupStep = "Registration failed";
+      http.end();
+      return;
+    }
+
+    // ===== STEP 4: Save credentials =====
+    currentSetupState = SETUP_SAVING;
+    currentSetupStep = "Saving configuration...";
+
+    String tenantId = resDoc["tenantId"] | "";
+    String deviceId = resDoc["deviceId"] | "";
+    String mqttPassword = resDoc["mqttPassword"] | "";
+    String deviceName = resDoc["deviceName"] | pendingSetupDeviceName;
+    String brokerHost = resDoc["brokerHost"] | MQTT_BROKER;
+    int brokerPort = resDoc["brokerPort"] | MQTT_PORT;
+
+    addSystemLog("[REGISTER] Saving claim data: tenant=" + tenantId + ", device=" + deviceId);
+
+    Preferences prefs;
+    prefs.begin("claim", false);
+    prefs.putBool("claimed", true);
+    prefs.putString("tenantId", tenantId);
+    prefs.putString("deviceId", deviceId);
+    prefs.putString("deviceName", deviceName);
+    prefs.putString("mqttUser", creds.mac);
+    prefs.putString("mqttPass", mqttPassword);
+    prefs.putString("mqttBroker", brokerHost);
+    prefs.putInt("mqttPort", brokerPort);
+    prefs.end();
+
+    // Save WiFi credentials
+    prefs.begin("wifi", false);
+    prefs.putString("ssid", pendingSetupSSID);
+    prefs.putString("pass", pendingSetupPassword);
+    prefs.end();
+
+    addSystemLog("[REGISTER] Configuration saved successfully");
+
+    // Mark setup complete
+    currentSetupState = SETUP_COMPLETE;
+    currentSetupStep = "Setup complete!";
+
+    addSystemLog("[REGISTER] ====== REGISTRATION SUCCESSFUL ======");
+    saveSetupResult(true, "", "");
+
+    // Update global state and connect to MQTT
+    deviceClaimed = true;
+    claimedTenantId = tenantId;
+    claimedDeviceId = deviceId;
+    claimedMqttClientId = creds.mac;
+    claimedMqttBroker = brokerHost;
+    claimedMqttUsername = creds.mac;
+    claimedMqttPassword = mqttPassword;
+
+    // Connect to MQTT now that we have credentials
+    mqttSetup();
+    mqttConnect();
+
+    // Turn off AP mode - device is now claimed and connected
+    addSystemLog("[REGISTER] Disabling AP mode - device is claimed");
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    isAPMode = false;
+
+    addSystemLog("[REGISTER] Device is now in station mode, connected to WiFi and MQTT");
+
+  } else {
+    // Handle error response
+    String response = http.getString();
+    addSystemLog("[REGISTER] HTTP error: " + String(httpCode) + " - " + response);
+
+    JsonDocument resDoc;
+    deserializeJson(resDoc, response);
+    String errorMsg = resDoc["error"] | "Registration failed";
+
+    currentSetupState = SETUP_FAILED;
+    currentSetupStep = "Registration failed";
+
+    if (httpCode == 401) {
+      currentSetupError = "Invalid email or password.";
+      currentSetupErrorCode = "invalid_credentials";
+    } else if (httpCode == 409) {
+      currentSetupError = errorMsg;
+      currentSetupErrorCode = "account_exists";
+    } else if (httpCode < 0) {
+      currentSetupError = "Could not connect to server. Check internet connection.";
+      currentSetupErrorCode = "connection_error";
+    } else {
+      currentSetupError = errorMsg;
+      currentSetupErrorCode = "server_error";
+    }
+
+    addSystemLog("[REGISTER] Setup failed: " + currentSetupError);
+    saveSetupResult(false, currentSetupErrorCode, currentSetupError);
+  }
+
+  http.end();
+}
+
+// ============================================================================
+// Process Pending Setup from Captive Portal (APSTA Mode - Real-time feedback)
+// Called from loop() after setup request is received via /api/setup/connect
+// Uses AP+STA mode to keep AP running so SPA can poll progress in real-time
+// LEGACY: Combined flow for backward compatibility
+// ============================================================================
+void processPendingSetup() {
+  if (!pendingSetup) return;
+
+  // Wait a bit for HTTP response to be fully sent
+  if (millis() - pendingSetupTime < 500) return;
+
+  pendingSetup = false;  // Clear flag first to prevent re-entry
+
+  // Reset state
+  currentSetupState = SETUP_CONNECTING_WIFI;
+  currentSetupStep = "Starting setup...";
+  currentSetupError = "";
+  currentSetupErrorCode = "";
+  setupNeedsReboot = false;
+
+  // ===== STEP 1: Log setup start =====
+  addSystemLog("[SETUP] ====== STARTING SETUP PROCESS (APSTA MODE) ======");
+  addSystemLog("[SETUP] SSID: " + pendingSetupSSID);
+  addSystemLog("[SETUP] Email: " + pendingSetupEmail);
+  addSystemLog("[SETUP] Device: " + pendingSetupDeviceName);
+
+  // ===== STEP 2: Scan for target network to find its channel =====
+  // In AP+STA mode, both interfaces MUST be on the same channel
+  currentSetupStep = "Scanning for network...";
+  addSystemLog("[SETUP] Scanning for target network channel...");
+
+  // Temporarily switch to STA mode for reliable scanning
+  WiFi.mode(WIFI_STA);
+  delay(100);
+
+  int targetChannel = 1;  // Default fallback
+  int n = WiFi.scanNetworks();
+  addSystemLog("[SETUP] Found " + String(n) + " networks");
+
+  for (int i = 0; i < n; i++) {
+    if (WiFi.SSID(i) == pendingSetupSSID) {
+      targetChannel = WiFi.channel(i);
+      addSystemLog("[SETUP] Target network '" + pendingSetupSSID + "' found on channel " + String(targetChannel));
+      break;
+    }
+  }
+  WiFi.scanDelete();
+
+  if (targetChannel == 1 && n > 0) {
+    addSystemLog("[SETUP] WARNING: Target network not found in scan, using channel 1");
+  }
+
+  // ===== STEP 3: Switch to AP+STA mode with correct channel =====
+  currentSetupStep = "Connecting to WiFi...";
+  addSystemLog("[SETUP] Switching to AP+STA mode on channel " + String(targetChannel) + "...");
+  WiFi.mode(WIFI_AP_STA);
+  delay(100);
+
+  // Restart AP on the correct channel
+  String macSuffix = g_macUpper.length() > 5 ? g_macUpper.substring(g_macUpper.length() - 5) : "0000";
+  macSuffix.replace(":", "");
+  String apName = "MouseTrap-" + macSuffix;
+  WiFi.softAP(apName.c_str(), "", targetChannel);  // Empty password for open AP
+  delay(500);  // Allow mode switch to settle
+  addSystemLog("[SETUP] AP restarted on channel " + String(targetChannel) + ", IP: " + WiFi.softAPIP().toString());
+
+  // ===== STEP 4: Connect to WiFi (STA) =====
+  addSystemLog("[SETUP] Connecting to WiFi: " + pendingSetupSSID);
+  WiFi.begin(pendingSetupSSID.c_str(), pendingSetupPassword.c_str());
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(500);
+    attempts++;
+    if (attempts % 5 == 0) {
+      currentSetupStep = "Connecting to WiFi... (" + String(attempts) + "s)";
+    }
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    addSystemLog("[SETUP] WiFi connection failed after " + String(attempts) + " attempts");
+    addSystemLog("[SETUP] WiFi status code: " + String(WiFi.status()));
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "Could not connect to WiFi network. Check password and try again.";
+    currentSetupErrorCode = "wifi_failed";
+    currentSetupStep = "WiFi connection failed";
+    // Stay in AP+STA mode so user can retry - don't reboot
+    return;
+  }
+
+  addSystemLog("[SETUP] WiFi connected, IP: " + WiFi.localIP().toString());
+  currentSetupStep = "WiFi connected, syncing time...";
+
+  // Give WiFi stack time to fully initialize
+  delay(2000);
+
+  // ===== STEP 5: Sync NTP time =====
+  currentSetupState = SETUP_SYNCING_TIME;
+  addSystemLog("[SETUP] Syncing NTP time...");
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+
+  const time_t MIN_VALID_TIME = 1577836800;  // Jan 1, 2020
+  int ntpAttempts = 0;
+  time_t now = time(nullptr);
+  while (now < MIN_VALID_TIME && ntpAttempts < 20) {
+    delay(500);
+    now = time(nullptr);
+    ntpAttempts++;
+    if (ntpAttempts % 4 == 0) {
+      currentSetupStep = "Syncing time... (" + String(ntpAttempts * 500 / 1000) + "s)";
+    }
+  }
+
+  if (now < MIN_VALID_TIME) {
+    addSystemLog("[SETUP] NTP sync timeout, epoch=" + String((unsigned long)now));
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "Could not sync time with internet. Check your network connection.";
+    currentSetupErrorCode = "ntp_failed";
+    currentSetupStep = "Time sync failed";
+    return;
+  }
+
+  addSystemLog("[SETUP] Time synced, epoch: " + String((unsigned long)now));
+
+  // ===== STEP 6: Generate claim token =====
+  currentSetupState = SETUP_REGISTERING;
+  currentSetupStep = "Registering device...";
+  addSystemLog("[SETUP] Generating claim credentials...");
+  ClaimCredentials creds = generateClaimCredentials();
+  addSystemLog("[SETUP] MAC=" + String(creds.mac) + ", timestamp=" + String(creds.timestamp));
+
+  // ===== STEP 7: Call server =====
+  String url = String(CLAIM_SERVER_URL) + "/api/setup/register-and-claim";
+  addSystemLog("[SETUP] Calling server: " + url);
+
+  HTTPClient http;
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.setTimeout(15000);
+
+  JsonDocument reqDoc;
+  reqDoc["email"] = pendingSetupEmail;
+  reqDoc["password"] = pendingSetupAccountPassword;
+  reqDoc["deviceName"] = pendingSetupDeviceName;
+  reqDoc["mac"] = creds.mac;
+  reqDoc["claimToken"] = creds.token;
+  reqDoc["timestamp"] = creds.timestamp;
+  reqDoc["isNewAccount"] = pendingSetupIsNewAccount;
+
+  String reqBody;
+  serializeJson(reqDoc, reqBody);
+
+  int httpCode = http.POST(reqBody);
+  addSystemLog("[SETUP] HTTP response code: " + String(httpCode));
+
+  if (httpCode == 200 || httpCode == 201) {
+    String response = http.getString();
+    addSystemLog("[SETUP] Got success response");
 
     JsonDocument respDoc;
     DeserializationError jsonErr = deserializeJson(respDoc, response);
 
     if (jsonErr) {
-      addSystemLog("[SETUP] Step 6 FAILED: JSON parse error: " + String(jsonErr.c_str()));
-      addSystemLog("[SETUP] Restarting...");
-      delay(1000);
-      ESP.restart();
+      addSystemLog("[SETUP] JSON parse error: " + String(jsonErr.c_str()));
+      currentSetupState = SETUP_FAILED;
+      currentSetupError = "Server returned invalid response. Please try again.";
+      currentSetupErrorCode = "server_error";
+      currentSetupStep = "Server error";
+      http.end();
       return;
     }
 
     if (respDoc["success"].as<bool>()) {
       // ===== STEP 7: Save credentials =====
-      addSystemLog("[SETUP] Step 7: Saving credentials to NVS...");
+      currentSetupState = SETUP_SAVING;
+      currentSetupStep = "Saving credentials...";
+      addSystemLog("[SETUP] Saving credentials to NVS...");
 
       deviceClaimed = true;
       claimedDeviceId = respDoc["deviceId"].as<String>();
@@ -11390,15 +12224,15 @@ void processPendingSetup() {
       claimedMqttUsername = respDoc["mqttCredentials"]["username"].as<String>();
       claimedMqttPassword = respDoc["mqttCredentials"]["password"].as<String>();
 
-      devicePrefs.begin("device", false);  // FIXED: Use "device" namespace to match loadClaimedCredentials()
+      devicePrefs.begin("device", false);
       devicePrefs.putBool("claimed", true);
       devicePrefs.putString("deviceId", claimedDeviceId);
       devicePrefs.putString("deviceName", claimedDeviceName);
       devicePrefs.putString("tenantId", claimedTenantId);
-      devicePrefs.putString("mqttClientId", respDoc["mqttClientId"].as<String>());  // Save mqttClientId too
+      devicePrefs.putString("mqttClientId", respDoc["mqttClientId"].as<String>());
       devicePrefs.putString("mqttUsername", claimedMqttUsername);
       devicePrefs.putString("mqttPassword", claimedMqttPassword);
-      devicePrefs.putString("mqttBroker", respDoc["mqttBroker"].as<String>());  // Save broker URL
+      devicePrefs.putString("mqttBroker", respDoc["mqttBroker"].as<String>());
       devicePrefs.end();
 
       devicePrefs.begin("wifi", false);
@@ -11406,36 +12240,60 @@ void processPendingSetup() {
       devicePrefs.putString("password", pendingSetupPassword);
       devicePrefs.end();
 
-      addSystemLog("[SETUP] Step 7 OK: Credentials saved");
+      addSystemLog("[SETUP] Credentials saved");
       addSystemLog("[SETUP] DeviceID: " + claimedDeviceId);
-      addSystemLog("[SETUP] TenantID: " + claimedTenantId);
-      addSystemLog("[SETUP] Step 8: Shutting down AP...");
-      WiFi.softAPdisconnect(true);
-      WiFi.mode(WIFI_STA);
-      addSystemLog("[SETUP] ====== SETUP COMPLETE - REBOOTING ======");
+      clearSetupResult();  // Clear any previous error on success
 
-      delay(1000);
-      ESP.restart();
+      // ===== SUCCESS! =====
+      currentSetupState = SETUP_COMPLETE;
+      currentSetupStep = "Setup complete!";
+      setupNeedsReboot = true;  // Signal to SPA that reboot is needed
+      addSystemLog("[SETUP] ====== SETUP COMPLETE - WAITING FOR REBOOT COMMAND ======");
+
     } else {
       String error = respDoc["error"].as<String>();
-      addSystemLog("[SETUP] Step 6 FAILED: Server error: " + error);
-      addSystemLog("[SETUP] Restarting...");
-      delay(1000);
-      ESP.restart();
+      addSystemLog("[SETUP] Server rejected: " + error);
+      currentSetupState = SETUP_FAILED;
+      currentSetupError = error;
+      currentSetupErrorCode = "server_rejected";
+      currentSetupStep = "Registration failed";
     }
   } else if (httpCode < 0) {
-    addSystemLog("[SETUP] Step 6 FAILED: HTTP connection error: " + String(httpCode));
-    addSystemLog("[SETUP] Error: " + http.errorToString(httpCode));
-    addSystemLog("[SETUP] Restarting...");
-    delay(1000);
-    ESP.restart();
+    addSystemLog("[SETUP] HTTP connection error: " + String(httpCode) + " - " + http.errorToString(httpCode));
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = "Could not connect to server. Check internet connection.";
+    currentSetupErrorCode = "connection_error";
+    currentSetupStep = "Connection error";
+  } else if (httpCode == 401) {
+    String errorBody = http.getString();
+    addSystemLog("[SETUP] Authentication error (401): " + errorBody.substring(0, 200));
+
+    JsonDocument errDoc;
+    String errorMsg = "Invalid email or password";
+    if (deserializeJson(errDoc, errorBody) == DeserializationError::Ok) {
+      if (errDoc.containsKey("error")) {
+        errorMsg = errDoc["error"].as<String>();
+      }
+    }
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = errorMsg;
+    currentSetupErrorCode = "invalid_credentials";
+    currentSetupStep = "Authentication failed";
   } else {
     String errorBody = http.getString();
-    addSystemLog("[SETUP] Step 6 FAILED: HTTP " + String(httpCode));
-    addSystemLog("[SETUP] Response: " + errorBody.substring(0, 200));
-    addSystemLog("[SETUP] Restarting...");
-    delay(1000);
-    ESP.restart();
+    addSystemLog("[SETUP] HTTP " + String(httpCode) + ": " + errorBody.substring(0, 200));
+
+    JsonDocument errDoc;
+    String errorMsg = "Registration failed (HTTP " + String(httpCode) + ")";
+    if (deserializeJson(errDoc, errorBody) == DeserializationError::Ok) {
+      if (errDoc.containsKey("error")) {
+        errorMsg = errDoc["error"].as<String>();
+      }
+    }
+    currentSetupState = SETUP_FAILED;
+    currentSetupError = errorMsg;
+    currentSetupErrorCode = "registration_failed";
+    currentSetupStep = "Registration failed";
   }
 
   http.end();
@@ -11450,7 +12308,9 @@ void loop() {
   }
 
   // Process pending setup from captive portal (deferred to allow HTTP response to send)
-  processPendingSetup();
+  processPendingWiFiTest();    // Phase 1: Test WiFi connection only
+  processPendingRegistration(); // Phase 2: Register (after WiFi confirmed)
+  processPendingSetup();       // Legacy: Combined flow (for backward compatibility)
 
   static uint32_t lastStamp = 0;
   if (!CrashKit::pageActive() && millis() - lastStamp >= 500) {

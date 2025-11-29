@@ -399,6 +399,32 @@ export async function getClaimStatus() {
 // Setup Wizard (Captive Portal)
 // ============================================================================
 
+export async function getSetupStatus() {
+  // Returns { attempted: boolean, success: boolean, errorCode: string, errorMessage: string }
+  return apiFetch('/api/setup/status');
+}
+
+export async function clearSetupStatus() {
+  // Clear the saved setup status after user acknowledges error
+  return apiFetch('/api/setup/status/clear', { method: 'POST' });
+}
+
+export async function getSetupProgress() {
+  // Real-time setup progress (APSTA mode)
+  // Returns { state: string, step: string, error: string, errorCode: string, needsReboot: boolean, wifiConnected: boolean, staIP: string }
+  return apiFetch('/api/setup/progress');
+}
+
+export async function resetSetupState() {
+  // Reset setup state to allow retry without reboot
+  return apiFetch('/api/setup/reset', { method: 'POST' });
+}
+
+export async function triggerReboot() {
+  // Trigger device reboot (called after successful setup)
+  return apiFetch('/api/setup/reboot', { method: 'POST' });
+}
+
 export async function scanWiFiNetworks(forceRescan = false) {
   // Returns { networks: [{ ssid: string, rssi: number, secure: boolean }] }
   // Firmware does synchronous scanning, so one call is enough
@@ -421,7 +447,29 @@ export async function connectWiFi(config) {
   // config: { ssid, password, email, accountPassword, deviceName }
   // Sends WiFi credentials and account info to device
   // Device will attempt to connect and register with the server
+  // LEGACY: Combined flow - use testWiFi + registerDevice for two-phase setup
   return apiFetch('/api/setup/connect', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function testWiFi(config) {
+  // config: { ssid, password }
+  // Phase 1 of two-phase setup: Test WiFi connection only
+  // Device connects to WiFi in AP+STA mode and stays connected
+  // Poll getSetupProgress() to check when wifi_connected state is reached
+  return apiFetch('/api/setup/test-wifi', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function registerDevice(config) {
+  // config: { email, accountPassword, deviceName, isNewAccount }
+  // Phase 2 of two-phase setup: Register with server (WiFi already connected)
+  // Requires WiFi to be connected first via testWiFi()
+  return apiFetch('/api/setup/register', {
     method: 'POST',
     body: JSON.stringify(config),
   });
