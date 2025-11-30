@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Transparent background for notification icon -->
+  <rect width="1024" height="1024" fill="none"/>
+
+  <!-- Simple silhouette - Just the trap mechanism (monochrome white) -->
+  <!-- This will be tinted by the notification system -->
+  <g fill="#FFFFFF">
+    <!-- Base platform -->
+    <rect x="150" y="650" width="724" height="100" rx="15"/>
+
+    <!-- Snap bar -->
+    <rect x="200" y="300" width="624" height="30" rx="15"/>
+    <circle cx="200" cy="315" r="25"/>
+    <circle cx="824" cy="315" r="25"/>
+
+    <!-- Trigger plate -->
+    <rect x="380" y="580" width="264" height="70" rx="8"/>
+
+    <!-- Spring coil (simplified) -->
+    <path d="M 180 650 L 180 550 L 220 550 L 220 500 L 180 500 L 180 450 L 220 450 L 220 400 L 180 400 L 180 350 L 220 350"
+          fill="none" stroke="#FFFFFF" stroke-width="30" stroke-linecap="round"/>
+
+    <!-- Alert indicator dot (top right) -->
+    <circle cx="820" cy="220" r="80"/>
+  </g>
+</svg>

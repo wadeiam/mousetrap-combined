@@ -11,6 +11,9 @@ import { EventEmitter } from 'events';
 import mqtt, { MqttClient, IClientOptions } from 'mqtt';
 import { Pool } from 'pg';
 import { logger } from './logger.service';
+import { getPushService } from './push.service';
+import { getEmailService } from './email.service';
+import { getSmsService } from './sms.service';
 import {
   DeviceStatusMessage,
   OtaProgressMessage,
@@ -253,12 +256,7 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
           break;
 
         case 'camera_snapshot':
-          this.emit('snapshot', {
-            tenantId: parsedTopic.tenantId,
-            macAddress: parsedTopic.macAddress,
-            imageData: message.image, // Image is already base64-encoded in the message
-            timestamp: message.timestamp || Date.now(),
-          });
+          await this.handleCameraSnapshot(parsedTopic, message);
           break;
 
         case 'device_alert':
@@ -449,6 +447,53 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   }
 
   /**
+   * Handle camera snapshot message - store in database and emit for WebSocket
+   */
+  private async handleCameraSnapshot(parsedTopic: ParsedTopic, message: { image: string; timestamp?: number }): Promise<void> {
+    const { tenantId, macAddress } = parsedTopic;
+
+    if (!tenantId || !macAddress) {
+      console.error('[MQTT] Invalid snapshot message - missing tenantId or macAddress');
+      return;
+    }
+
+    // Normalize timestamp to milliseconds
+    // Device may send seconds (10 digits) or milliseconds (13 digits)
+    let timestamp = message.timestamp || Date.now();
+    if (timestamp < 10000000000) {
+      // Timestamp is in seconds, convert to milliseconds
+      timestamp = timestamp * 1000;
+    }
+    const imageData = message.image;
+
+    try {
+      // Store snapshot in database (timestamp is now in ms, divide by 1000 for to_timestamp)
+      // Use AT TIME ZONE 'UTC' to store as UTC in the timestamp without timezone column
+      const query = `
+        UPDATE devices SET
+          last_snapshot = $3,
+          last_snapshot_at = (to_timestamp($4 / 1000.0) AT TIME ZONE 'UTC'),
+          updated_at = NOW()
+        WHERE tenant_id = $1 AND mqtt_client_id = $2
+      `;
+
+      await this.db.query(query, [tenantId, macAddress.toUpperCase(), imageData, timestamp]);
+
+      console.log(`[MQTT] Snapshot stored for device: ${macAddress} (tenant: ${tenantId})`);
+
+      // Emit event for WebSocket forwarding
+      this.emit('snapshot', {
+        tenantId,
+        macAddress: macAddress.toUpperCase(),
+        imageData,
+        timestamp,
+      });
+    } catch (error) {
+      console.error('[MQTT] Error storing snapshot:', error);
+    }
+  }
+
+  /**
    * Handle OTA progress message
    */
   private async handleOtaProgress(parsedTopic: ParsedTopic, progress: OtaProgressMessage): Promise<void> {
@@ -587,6 +632,35 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       });
 
       console.log(`[MQTT] Alert created for device ${macAddress}: ${sensorData.message}`);
+
+      // Get device name for notifications
+      const deviceNameQuery = await this.db.query(
+        'SELECT name FROM devices WHERE id = $1',
+        [deviceId]
+      );
+      const deviceName = deviceNameQuery.rows[0]?.name || macAddress;
+
+      // Send push notification to all users in tenant
+      const pushService = getPushService();
+      if (pushService) {
+        pushService.handleAlertNotification({
+          alertId,
+          deviceId,
+          deviceName,
+          alertType: sensorData.alert_type,
+          severity,
+          tenantId,
+          message: sensorData.message,
+        }).catch((err: Error) => {
+          logger.error('Failed to send push notification', { error: err.message, alertId });
+        });
+      }
+
+      // Send immediate email/SMS to emergency contacts
+      this.notifyEmergencyContactsImmediately(tenantId, deviceName, alertId).catch((err: Error) => {
+        logger.error('Failed to notify emergency contacts', { error: err.message, alertId });
+      });
+
       logger.info('Device alert created', {
         alertId,
         deviceId,
@@ -663,6 +737,112 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
         tenantId,
         macAddress,
         error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Send immediate notification to all emergency contacts for a tenant
+   * Called when an alert is first created (Level 1)
+   */
+  private async notifyEmergencyContactsImmediately(
+    tenantId: string,
+    deviceName: string,
+    alertId: string
+  ): Promise<void> {
+    try {
+      // Get all users in this tenant
+      const usersResult = await this.db.query<{ user_id: string }>(
+        `SELECT DISTINCT utm.user_id
+         FROM user_tenant_memberships utm
+         WHERE utm.tenant_id = $1`,
+        [tenantId]
+      );
+
+      if (usersResult.rows.length === 0) {
+        logger.debug('[MQTT] No users in tenant for emergency contact notification', { tenantId });
+        return;
+      }
+
+      const emailService = getEmailService();
+      const smsService = getSmsService();
+
+      let emailsSent = 0;
+      let smsSent = 0;
+
+      for (const user of usersResult.rows) {
+        // Get all enabled emergency contacts for this user (level 1 = immediate)
+        const contactsResult = await this.db.query<{
+          id: string;
+          contact_type: 'email' | 'sms' | 'app_user';
+          contact_value: string;
+          contact_name: string | null;
+        }>(
+          `SELECT id, contact_type, contact_value, contact_name
+           FROM emergency_contacts
+           WHERE user_id = $1 AND enabled = true`,
+          [user.user_id]
+        );
+
+        for (const contact of contactsResult.rows) {
+          try {
+            if (contact.contact_type === 'email' && emailService?.isEnabled()) {
+              const result = await emailService.sendTrapAlert(
+                contact.contact_value,
+                deviceName,
+                0, // Just triggered
+                1, // Level 1 (initial)
+                contact.contact_name || undefined
+              );
+              if (result.success) {
+                emailsSent++;
+                logger.info('[MQTT] Immediate email sent to emergency contact', {
+                  email: contact.contact_value,
+                  alertId,
+                  deviceName,
+                });
+              }
+            } else if (contact.contact_type === 'sms' && smsService?.isEnabled()) {
+              const result = await smsService.sendTrapAlert(
+                contact.contact_value,
+                deviceName,
+                0,
+                1,
+                contact.contact_name || undefined
+              );
+              if (result.success) {
+                smsSent++;
+                logger.info('[MQTT] Immediate SMS sent to emergency contact', {
+                  phone: contact.contact_value,
+                  alertId,
+                  deviceName,
+                });
+              }
+            }
+            // Note: app_user contacts are already handled by push notifications
+          } catch (err: any) {
+            logger.error('[MQTT] Failed to notify emergency contact', {
+              contactId: contact.id,
+              contactType: contact.contact_type,
+              error: err.message,
+            });
+          }
+        }
+      }
+
+      if (emailsSent > 0 || smsSent > 0) {
+        logger.info('[MQTT] Emergency contacts notified immediately', {
+          alertId,
+          deviceName,
+          emailsSent,
+          smsSent,
+        });
+      }
+    } catch (error: any) {
+      logger.error('[MQTT] Error notifying emergency contacts', {
+        tenantId,
+        alertId,
+        error: error.message,
       });
     }
   }
@@ -789,6 +969,19 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     };
 
     await this.publishDeviceCommand(tenantId, macAddress, command);
+  }
+
+  /**
+   * Trigger test alert on device (activates buzzer/LED without taking photos)
+   */
+  public async triggerTestAlert(tenantId: string, mqttClientId: string): Promise<void> {
+    const command: DeviceCommandMessage = {
+      command: 'test_trigger',
+      timestamp: Date.now(),
+    };
+
+    await this.publishDeviceCommand(tenantId, mqttClientId, command);
+    console.log(`[MQTT] Sent test_trigger command to ${mqttClientId}`);
   }
 
   /**
@@ -1167,4 +1360,15 @@ export async function createMqttService(config: MqttConfig, dbPool: Pool): Promi
   const service = new MqttService(config, dbPool);
   await service.connect();
   return service;
+}
+
+// Singleton instance for services that need to access MQTT without constructor injection
+let mqttServiceInstance: MqttService | null = null;
+
+export function setMqttService(service: MqttService): void {
+  mqttServiceInstance = service;
+}
+
+export function getMqttService(): MqttService | null {
+  return mqttServiceInstance;
 }

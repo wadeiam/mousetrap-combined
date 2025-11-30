@@ -1,7 +1,7 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-11-29
-**Latest Session:** Two-phase setup wizard with WiFi test-first flow
+**Last Updated:** 2025-11-30
+**Latest Session:** Dashboard device settings fix & location display
 
 ---
 
@@ -27,16 +27,22 @@ This is the primary handoff document for MouseTrap development sessions. It cont
 - Modifying can brick devices
 - Requires USB access to recover
 
-### ALWAYS USE CORRECT COMPILATION
+### ALWAYS USE MAKEFILE FOR COMPILATION
 ```bash
 cd /Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino
-make compile
+make compile    # Compiles with correct ESP32-S3 board
+make build-fs   # Builds LittleFS from trap-spa
 ```
+
+**Output location:** `build/mousetrap_arduino.ino.bin` and `build/littlefs.bin`
 
 ### NEVER USE WRONG BOARD
 ```bash
-# WRONG - DO NOT USE - causes OTA failures
-arduino-cli compile --fqbn esp32:esp32:esp32cam
+# WRONG - DO NOT USE - causes OTA failures and wrong binary format!
+arduino-cli compile --fqbn esp32:esp32:esp32cam   # <-- WRONG BOARD
+
+# This is the production device board (ESP32-S3, 16MB flash, PSRAM)
+# Only the Makefile knows the correct FQBN - always use `make compile`
 ```
 
 ### LITTLEFS OFFSET IS 0x510000
@@ -56,8 +62,9 @@ esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,F
 
 **Commands:**
 ```bash
-# Compile firmware
 cd /Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino
+
+# Compile firmware (outputs to build/mousetrap_arduino.ino.bin)
 make compile
 
 # Upload firmware via serial (auto-detect port, 921600 baud)
@@ -66,8 +73,8 @@ make upload
 # Upload with lower baud rate (more reliable)
 arduino-cli upload -p /dev/cu.usbserial-10 --fqbn "esp32:esp32:esp32s3:..." -UploadSpeed=115200 .
 
-# Deploy firmware OTA
-curl -u "ops:changeme" -F "file=@build/mousetrap_arduino.ino.bin" http://192.168.133.46/uploadfw
+# Deploy firmware OTA (ALWAYS use build/ folder)
+curl -u "ops:changeme" -F "file=@build/mousetrap_arduino.ino.bin" http://192.168.133.46/update
 ```
 
 ### Serial Monitoring
@@ -199,12 +206,20 @@ brew services start mosquitto
                                            +---------------+
                                            |  PostgreSQL   |
                                            +---------------+
+                                                   ^
                                                    |
-                                                   v
-                                           +---------------+
-                                           |  Dashboard    |
-                                           |  (React)      |
-                                           +---------------+
+                                           +-------+-------+
+                                           |               |
+                                   +---------------+  +---------------+
+                                   |  Dashboard    |  |  Mobile App   |
+                                   |  (React)      |  |(React Native) |
+                                   +---------------+  +---------------+
+                                                              |
+                                                              v
+                                                      +---------------+
+                                                      |  Expo Push    |
+                                                      | Notifications |
+                                                      +---------------+
 ```
 
 ### Multi-Tenant Access Model
@@ -239,9 +254,659 @@ brew services start mosquitto
 
 ---
 
-## Current Session Notes (2025-11-29)
+## Mobile App
 
-### Latest Work: Device Claim Recovery & Superadmin Snapshot Fix
+### Location
+`/Users/wadehargrove/Documents/MouseTrap/mobile-app/`
+
+### Technology Stack
+- **Framework:** React Native with Expo SDK 54
+- **Architecture:** New Architecture enabled (Fabric + TurboModules)
+- **Language:** TypeScript
+- **Navigation:** React Navigation (tabs)
+- **Build System:** EAS Build
+- **Push Notifications:** expo-notifications
+
+### Quick Start
+
+```bash
+# Install dependencies
+cd /Users/wadehargrove/Documents/MouseTrap/mobile-app
+npm install
+
+# Start development server
+npx expo start
+
+# Options:
+# - Press 'i' for iOS simulator
+# - Press 'a' for Android emulator
+# - Scan QR code with Expo Go for quick testing
+```
+
+### Current Status
+
+**Working in Expo Go:**
+- Login with MouseTrap credentials
+- Device list with status, battery, trap state
+- Alerts screen with acknowledge/resolve actions
+- Settings screen with notification preferences
+- Dark theme matching brand colors (#1a1a2e)
+
+**Requires Dev Build (not in Expo Go):**
+- Push notifications (uses native modules)
+- Full notification registration flow
+
+### Key Features
+
+1. **Authentication**
+   - Login with existing MouseTrap server credentials
+   - JWT token storage in SecureStore
+   - Auto-refresh on app launch
+
+2. **Device Management**
+   - Real-time device list with status badges (online/offline/alerting)
+   - Battery level indicators
+   - Trap state (set/triggered)
+   - Device detail view with network info, uptime, firmware version
+   - **Camera Snapshot Viewer** - Request and view snapshots from device cameras
+   - **Clear Alerts** - Clear all alerts for a device, sends reset to hardware
+   - **Test Alert** - Trigger test alert with full notification flow
+
+3. **Alert Management**
+   - Alert list grouped by device
+   - Acknowledge and resolve actions
+   - Alert type badges (motion/battery/offline)
+   - Timestamp display
+
+4. **Push Notifications**
+   - Registration on login (if permissions granted)
+   - Expo Push Notification tokens stored on server
+   - Notification preferences (trap alerts, offline, battery)
+   - Quiet hours support
+   - Multi-device support per user
+
+5. **Settings**
+   - Notification preferences toggle
+   - Quiet hours configuration
+   - Logout
+
+### Project Structure
+
+```
+mobile-app/
+├── app.json                    # Expo config, app metadata
+├── eas.json                    # EAS Build configuration
+├── package.json                # Dependencies
+├── tsconfig.json               # TypeScript config
+├── App.tsx                     # Root component
+└── src/
+    ├── navigation/
+    │   └── AppNavigator.tsx    # Tab navigation setup
+    ├── screens/
+    │   ├── LoginScreen.tsx     # Login form
+    │   ├── DevicesScreen.tsx   # Device list
+    │   ├── DeviceDetailScreen.tsx  # Single device view
+    │   ├── AlertsScreen.tsx    # Alerts list with actions
+    │   └── SettingsScreen.tsx  # Notification preferences
+    ├── context/
+    │   └── AuthContext.tsx     # Auth state management
+    ├── services/
+    │   ├── api.ts              # API client with interceptors
+    │   └── notifications.ts    # Expo push notification service
+    └── types/
+        └── index.ts            # TypeScript definitions
+```
+
+### Important Files
+
+| File | Purpose |
+|------|---------|
+| `app.json` | Expo configuration, app name, icons, splash screen |
+| `eas.json` | EAS Build profiles for dev/preview/production |
+| `src/services/api.ts` | Axios client, base URL, auth interceptors |
+| `src/services/notifications.ts` | Push token registration, permission handling |
+| `src/context/AuthContext.tsx` | Global auth state, login/logout logic |
+| `src/navigation/AppNavigator.tsx` | Tab navigation, auth routing |
+
+### Configuration
+
+**API Base URL** (in `src/services/api.ts`):
+```typescript
+const API_BASE_URL = 'http://192.168.133.110:4000/api';
+```
+
+**Expo Project** (in `app.json`):
+```json
+{
+  "expo": {
+    "name": "MouseTrap",
+    "slug": "mousetrap",
+    "extra": {
+      "eas": {
+        "projectId": "YOUR_PROJECT_ID"  // To be configured
+      }
+    }
+  }
+}
+```
+
+### Next Steps
+
+1. **Configure EAS Project**
+   ```bash
+   cd /Users/wadehargrove/Documents/MouseTrap/mobile-app
+   eas init  # Creates project and sets projectId
+   ```
+
+2. **Build for Physical Devices**
+   ```bash
+   # iOS development build
+   eas build --profile development --platform ios
+
+   # Android development build
+   eas build --profile development --platform android
+   ```
+
+3. **Test Push Notifications**
+   - Install dev build on physical device
+   - Login to trigger token registration
+   - Create device alert to test notification delivery
+   - Use server's `POST /api/push/test` endpoint for manual tests
+
+4. **TestFlight and Play Store**
+   ```bash
+   # iOS preview build (for TestFlight)
+   eas build --profile preview --platform ios
+   eas submit --platform ios
+
+   # Android preview build (for internal testing)
+   eas build --profile preview --platform android
+   eas submit --platform android
+   ```
+
+5. **Future Enhancements**
+   - Pull-to-refresh on device and alert lists
+   - Real-time updates via WebSocket
+   - Trap arming/disarming controls
+   - Multi-tenant support (if needed)
+
+### Known Limitations
+
+- Push notifications do NOT work in Expo Go (requires dev build)
+- API base URL is hardcoded (consider environment variables for prod)
+- No real-time updates (polling-based)
+- No offline support
+
+### Testing
+
+**Without Dev Build (Expo Go):**
+- Login and authentication
+- Device list and detail screens
+- Alert management (acknowledge/resolve)
+- Settings UI
+- Navigation flow
+
+**Requires Dev Build:**
+- Push notification registration
+- Receiving push notifications
+- Notification permission prompts
+
+---
+
+## Current Session Notes (2025-11-30)
+
+### Latest Work: Dashboard Device Settings & Location Display
+
+**Status:** Complete - Fixed location save and improved device detail page
+
+**What Was Implemented:**
+
+1. **Fixed Device Settings Location Save (devices.routes.ts)**
+   - **Problem:** Location field in Device Settings wouldn't save for superadmins
+   - **Cause:** PATCH `/devices/:id` filtered by `tenant_id = req.user.tenantId`
+   - When superadmin (Master Tenant) edits device in a subtenant, tenant IDs don't match
+   - **Fix:** Added superadmin bypass - superadmins can now update any device regardless of tenant
+   - Same pattern already used in GET endpoint, now consistent across PATCH
+
+2. **Location as Snapshot Card Title (DeviceDetail.tsx)**
+   - Card now shows device location (e.g., "Loading Dock, Warehouse Floor") as title
+   - Falls back to "Camera Snapshot" if no location is set
+   - Encourages users to set meaningful locations for their devices
+
+**Files Modified:**
+- `Server/src/routes/devices.routes.ts` - Added superadmin handling to PATCH endpoint
+- `trap-dashboard/src/pages/DeviceDetail.tsx` - Dynamic card title from device.location
+
+---
+
+### Previous Work: Mobile App Device Actions & Bug Fixes
+
+**Status:** Complete - Clear Alerts and Test Alert buttons added to mobile app
+
+**What Was Implemented:**
+
+1. **Mobile App Device Actions (DeviceDetailScreen.tsx)**
+   - Added "Actions" section at bottom of device detail screen
+   - **Clear Alerts** button - Clears all active alerts for device, sends MQTT reset to device
+   - **Test Alert** button - Creates test alert, sends push notifications and immediate email to emergency contacts
+   - Confirmation dialogs before both actions
+   - Loading states while actions in progress
+   - Test Alert disabled when device offline
+
+2. **Server Endpoints (devices.routes.ts)**
+   - `POST /api/devices/:id/clear-alerts` - Clears alerts, sends `alert_reset` MQTT command
+   - `POST /api/devices/:id/test-alert` - Creates test alert with full notification flow
+   - Both endpoints support admin and superadmin roles
+   - Superadmin can clear alerts for any device (cross-tenant)
+
+3. **Fixed: Trap State Display ("? unknown")**
+   - **Problem:** Mobile app showed "Trap: ? unknown" for all devices
+   - **Cause:** Server wasn't returning `trapState` field
+   - **Fix:** Added `trapState` computed field to device list and detail queries
+   - Calculated as `triggered` (has unresolved alerts) or `set` (no alerts)
+
+4. **Fixed: MQTT Alert Reset Not Reaching Device**
+   - **Problem:** `alert_reset` command sent but device didn't reset
+   - **Cause:** Command sent to `D0:CF:13:15:50:60` (mac_address with colons)
+   - **Device subscribes to:** `D0CF13155060` (mqtt_client_id without colons)
+   - **Fix:** Changed clear-alerts to query `mqtt_client_id` and use that for MQTT command
+
+5. **Immediate Email on Alert Creation (mqtt.service.ts)**
+   - Added `notifyEmergencyContactsImmediately()` method
+   - When alert is created, immediately sends email to all emergency contacts
+   - No longer requires waiting for escalation cron job
+
+6. **Improved Logging (server.ts)**
+   - Changed request logging from `req.path` to `req.originalUrl`
+   - Now shows full API path for easier debugging
+
+**Files Modified:**
+- `mobile-app/src/screens/DeviceDetailScreen.tsx` - Added Actions section with buttons
+- `mobile-app/src/services/api.ts` - Added `clearAlerts()` and `triggerTestAlert()` methods
+- `Server/src/routes/devices.routes.ts` - Added endpoints, fixed trapState, fixed mqtt_client_id
+- `Server/src/services/mqtt.service.ts` - Added immediate emergency contact notification
+- `Server/src/server.ts` - Improved request logging
+
+**API Methods Added (mobile-app/src/services/api.ts):**
+```typescript
+clearAlerts(deviceId: string): Promise<ApiResponse<{ message: string; clearedCount: number }>>
+triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; message: string; deviceName: string }>>
+```
+
+---
+
+## Previous Session Notes (2025-11-29)
+
+### Previous Work: Escalating Notification System (Phase 4 - SMS/Email)
+
+**Status:** Complete - SMS (Twilio) and Email (Nodemailer) integration for emergency contacts
+
+**What Was Implemented:**
+
+1. **SMS Service (`sms.service.ts`)**
+   - Full Twilio SDK integration via `twilio` npm package
+   - Rate limiting: Max 5 SMS per hour per phone number (prevents spam)
+   - E.164 phone number formatting (auto-adds country code if missing)
+   - `sendTrapAlert()` method with urgency levels:
+     - L4: "URGENT MOUSETRAP ALERT"
+     - L5: "EMERGENCY MOUSETRAP ALERT"
+   - Personalized messages with contact name if provided
+   - Singleton pattern with `initSmsService()` and `getSmsService()`
+
+2. **Email Service (`email.service.ts`)**
+   - Nodemailer SMTP integration
+   - Rate limiting: Max 10 emails per hour per address
+   - HTML and plain text email templates
+   - Styled email with urgency colors (orange for L4, red for L5)
+   - `sendTrapAlert()` method with:
+     - Urgency prefix (emoji)
+     - Device name and elapsed time
+     - Contact personalization
+     - Call-to-action messaging
+   - Singleton pattern with `initEmailService()` and `getEmailService()`
+
+3. **Escalation Service Updates (`escalation.service.ts`)**
+   - Updated `sendSmsAlert()` to use real SMS service
+   - Updated `sendEmailAlert()` to use real email service
+   - Both methods now:
+     - Check if service is configured before attempting send
+     - Log success/failure with relevant details
+     - Return true/false for contact notification tracking
+
+4. **Server Initialization (`server.ts`)**
+   - Added imports for SMS and email services
+   - Services initialized at startup (after push service)
+   - Console output shows if services are enabled or disabled
+
+5. **Environment Variables (`.env.example`)**
+   - Added Twilio configuration:
+     - `TWILIO_ACCOUNT_SID`
+     - `TWILIO_AUTH_TOKEN`
+     - `TWILIO_PHONE_NUMBER`
+   - Updated SMTP configuration:
+     - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`
+     - `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`
+
+**Files Created:**
+- `Server/src/services/sms.service.ts` - Twilio SMS service
+- `Server/src/services/email.service.ts` - Nodemailer email service
+
+**Files Modified:**
+- `Server/src/services/escalation.service.ts` - Integrated SMS/email services
+- `Server/src/server.ts` - Initialize services at startup
+- `Server/.env.example` - Added SMS and updated email config
+
+**Dependencies Added:**
+- `twilio` - Twilio SDK for SMS
+- `nodemailer` - SMTP email sending
+- `@types/nodemailer` - TypeScript types
+
+**How Emergency Contact Escalation Works:**
+
+1. When an alert reaches Level 4+ (CRITICAL or EMERGENCY)
+2. Escalation service queries emergency contacts for that level
+3. For each contact that hasn't been notified at this level:
+   - **app_user**: Sends push notification to app user
+   - **sms**: Calls SMS service → Twilio API → SMS to phone
+   - **email**: Calls email service → SMTP → Email inbox
+4. Contact is marked as notified at this level
+5. Won't be re-notified unless alert escalates to higher level
+
+**Rate Limiting:**
+- SMS: Max 5 per hour per phone number (prevents Twilio cost explosion)
+- Email: Max 10 per hour per address (prevents spam)
+- Both services track sends in-memory with 1-hour rolling window
+
+---
+
+### Previous Work: Escalating Notification System (Phase 2 - Firmware)
+
+**Status:** Complete - Device-side autonomous alert escalation with NVS persistence
+
+**What Was Implemented:**
+
+1. **Alert State Types (lines 444-507 in `mousetrap_arduino.ino`)**
+   - `AlertLevel` enum: `ALERT_LEVEL_NONE` through `ALERT_LEVEL_5`
+   - `AlertEscalationState` struct: tracks trigger time, level, server acknowledgment
+   - `EscalationPreset` struct: timing thresholds for level transitions
+   - 3 preset constants: `PRESET_RELAXED`, `PRESET_NORMAL`, `PRESET_AGGRESSIVE`
+
+2. **Escalation Functions (lines 7086-7439)**
+   - `saveAlertStateToNVS()` / `loadAlertStateFromNVS()` / `clearAlertStateFromNVS()` - NVS persistence
+   - `calculateAlertLevel()` - Determines level based on elapsed minutes and active preset
+   - `updateBuzzerForLevel()` - Buzzer patterns per level:
+     - L1: Off
+     - L2: 1 beep/minute (800Hz)
+     - L3: 3 beeps/minute (1000Hz)
+     - L4: Continuous short beeps every 2s (1200Hz)
+     - L5: Warbling tone (alternating 1000/1500Hz)
+   - `updateLEDForLevel()` - LED patterns per level:
+     - L1: Solid red
+     - L2: Slow blink (1Hz)
+     - L3: Fast blink (2Hz)
+     - L4: Rapid blink (4Hz)
+     - L5: Solid with flash bursts
+   - `updateAlertEscalation()` - Main state machine, called from loop()
+   - `handleEscalationCommand()` - MQTT handler for preset/timing updates from server
+   - `handleAlertClearCommand()` - MQTT handler for alert acknowledgment
+   - `syncAlertStateWithServer()` - Syncs state after MQTT reconnect
+
+3. **Integration Points**
+   - `alertFunction()` now initializes escalation state when trap triggers (line 7073)
+   - `setup()` calls `loadAlertStateFromNVS()` for power loss recovery (line 11710)
+   - `loop()` calls `updateAlertEscalation()` every iteration (line 12837)
+   - MQTT reconnect calls `syncAlertStateWithServer()` (line 2960)
+   - MQTT commands: `alert_reset`, `alert_clear`, `escalation` (lines 2610-2615)
+
+4. **MQTT Topics Added**
+   - Device publishes: `tenant/{id}/device/{id}/escalation_update` (level changes)
+   - Device publishes: `tenant/{id}/device/{id}/alert_sync` (reconnect sync)
+   - Device publishes: `tenant/{id}/device/{id}/alert_cleared` (confirmation)
+   - Server sends: `command/escalation` (preset changes, force level)
+   - Server sends: `command/alert_clear` (acknowledge/resolve)
+
+**Files Modified:**
+- `mousetrap_arduino/mousetrap_arduino.ino` - Added entire escalation system
+
+---
+
+### Previous Work: Escalating Notification System (Phase 3 - Mobile App UI)
+
+**Status:** Complete - Mobile app now has full escalation settings and emergency contacts management
+
+**What Was Implemented:**
+
+1. **Types (`types/index.ts`)**
+   - Added `EscalationPreset` type (`'relaxed' | 'normal' | 'aggressive' | 'custom'`)
+   - Added `CustomEscalation` interface for custom timing
+   - Added `EscalationPresetConfig` for preset descriptions
+   - Added `EmergencyContact` and `CreateEmergencyContact` interfaces
+   - Added `EmergencyContactType` (`'app_user' | 'sms' | 'email'`)
+   - Extended `NotificationPreferences` with escalation fields
+
+2. **API Service (`services/api.ts`)**
+   - `getEscalationPresets()` - Fetch available presets
+   - `getEscalationSettings()` - Get user's escalation config
+   - `updateEscalationSettings()` - Update preset, timing, DND override
+   - `getEmergencyContacts()` - List user's emergency contacts
+   - `addEmergencyContact()` - Add new contact (SMS, email, app user)
+   - `updateEmergencyContact()` - Update existing contact
+   - `deleteEmergencyContact()` - Remove contact
+
+3. **Settings Screen (`screens/SettingsScreen.tsx`)**
+   - **Alert Escalation Section:**
+     - Escalation Speed selector (Relaxed, Normal, Aggressive, Custom)
+     - Modal showing all presets with timing details (L2, L3, L4, L5)
+     - DND Override toggle with warning modal
+   - **Emergency Contacts Section:**
+     - List of contacts with type icons (person, SMS, email)
+     - Add Contact modal with type selector, value input, name, level
+     - Delete contact with confirmation
+     - Empty state when no contacts
+   - **DND Warning Modal:**
+     - Warning about mouse welfare (12h survival)
+     - "Keep Enabled" (primary) and "Disable Anyway" (secondary) buttons
+
+4. **Dependencies:**
+   - Installed `@expo/vector-icons` for Ionicons
+
+**Files Modified:**
+- `mobile-app/src/types/index.ts` - Added escalation and contact types
+- `mobile-app/src/services/api.ts` - Added escalation and contact API methods
+- `mobile-app/src/screens/SettingsScreen.tsx` - Complete rewrite with escalation UI
+
+---
+
+### Previous Work: Escalating Notification System (Phase 1 - Server)
+
+**Status:** Complete - Server infrastructure for escalating alerts based on mouse welfare timeline
+
+**What Was Implemented:**
+
+1. **Database Migration `013_escalation_system.sql`**
+   - `emergency_contacts` table - SMS, email, app user contacts for emergency escalation
+   - `alert_escalation_state` table - tracks escalation level, notification timing per alert
+   - Added to `notification_preferences`: `escalation_preset`, `custom_escalation`, `critical_override_dnd`, `dnd_override_acknowledged`
+   - Added `escalation_level` and `contact_type` columns to `notification_log`
+
+2. **Escalation Service (`escalation.service.ts`)**
+   - **5 escalation levels** based on mouse welfare (12-24h survival window):
+     - L1 (0-1h): Single notification, standard sound
+     - L2 (1-2h): Repeat every 30 min
+     - L3 (2-4h): Repeat every 15 min, device buzzer starts
+     - L4 (4-8h): Repeat every 10 min, override DND, escalate contacts
+     - L5 (8h+): Repeat every 5 min, all methods
+   - **3 presets**: Relaxed, Normal (default), Aggressive + Custom timing
+   - **Scalable query**: Only processes alerts due for notification (indexed)
+   - **MQTT commands**: Sends buzzer/LED patterns to device
+   - **Emergency contact notifications**: Placeholders for SMS (Twilio) and email
+
+3. **New API Endpoints** (in `push.routes.ts`)
+   - `GET /api/push/escalation/presets` - Available presets
+   - `GET /api/push/escalation/settings` - User's escalation config
+   - `PUT /api/push/escalation/settings` - Update escalation config
+   - `GET /api/push/emergency-contacts` - List emergency contacts
+   - `POST /api/push/emergency-contacts` - Add contact
+   - `PUT /api/push/emergency-contacts/:id` - Update contact
+   - `DELETE /api/push/emergency-contacts/:id` - Remove contact
+
+4. **Cron Job** (`server.ts`)
+   - Runs every 60 seconds via `setInterval`
+   - Only processes alerts where `next_notification_at <= NOW()` (efficient)
+   - Sends escalated notifications and device commands
+
+5. **Alert Acknowledge Integration** (`alerts.routes.ts`)
+   - Updated acknowledge endpoint to use escalation service
+   - Stops escalation and sends `alert_clear` MQTT command to device
+
+6. **MQTT Types Updated** (`mqtt.types.ts`)
+   - Added `escalation` and `alert_clear` command types
+   - Added escalation-specific fields (level, buzzer, buzzerPattern, led)
+
+**Files Modified:**
+- `Server/migrations/013_escalation_system.sql` - New migration
+- `Server/src/services/escalation.service.ts` - New service
+- `Server/src/services/mqtt.service.ts` - Added getMqttService singleton
+- `Server/src/routes/push.routes.ts` - Escalation and emergency contact endpoints
+- `Server/src/routes/alerts.routes.ts` - Acknowledge with escalation integration
+- `Server/src/types/mqtt.types.ts` - New command types
+- `Server/src/server.ts` - Initialize escalation service, cron job
+
+**Remaining Phases:**
+- Phase 2: Firmware implementation (buzzer/LED state machine, NVS persistence)
+- Phase 3: Mobile app UI for escalation settings
+- Phase 4: SMS (Twilio) and email integration
+
+**Plan File:** `/Users/wadehargrove/.claude/plans/groovy-sprouting-eich.md`
+
+---
+
+### Previous Work: Timezone Auto-Detection & Snapshot Age Overlay
+
+**Status:** Complete - Timezone stored per-device, stale snapshot indicator in mobile app
+
+**What Was Implemented:**
+
+1. **Timezone Auto-Detection During Setup**
+   - Setup wizard (`Setup.svelte`) auto-detects timezone using `Intl.DateTimeFormat().resolvedOptions().timeZone`
+   - IANA timezone string (e.g., "America/Los_Angeles") sent to device during registration
+   - Firmware stores timezone in `pendingSetupTimezone` and sends to server
+
+2. **Database Timezone Storage**
+   - Migration `012_add_device_timezone.sql`: Added `timezone VARCHAR(64)` column to devices table
+   - Server `setup.routes.ts` stores timezone on device creation and reclaim
+   - Device detail API returns timezone in response
+
+3. **Snapshot Timestamp Fixes**
+   - Fixed "Invalid Date" display by converting PostgreSQL EXTRACT result from string to number
+   - Fixed 8-hour timezone offset by using `AT TIME ZONE 'UTC'` when storing timestamps
+   - Server now correctly stores and retrieves UTC timestamps
+
+4. **Stale Snapshot Overlay in Mobile App**
+   - When snapshot is >2 minutes old, orange badge appears on image showing age
+   - Displays "X min ago", "X hours ago", or "X days ago"
+   - Prevents users from mistaking old snapshots for current/empty state
+
+**Files Modified:**
+- `Server/migrations/012_add_device_timezone.sql` - New migration
+- `Server/src/routes/setup.routes.ts` - Accept and store timezone
+- `Server/src/routes/devices.routes.ts` - Return timezone in API, fix timestamp extraction
+- `Server/src/services/mqtt.service.ts` - Store timestamps with correct UTC handling
+- `mousetrap_arduino/mousetrap_arduino.ino` - Accept timezone in setup endpoints
+- `mousetrap_arduino/trap-spa/src/pages/Setup.svelte` - Auto-detect and send timezone
+- `mobile-app/src/screens/DeviceDetailScreen.tsx` - Stale snapshot overlay
+- `mobile-app/src/services/api.ts` - Map timezone, convert timestamp to number
+- `mobile-app/src/types/index.ts` - Add timezone to Device type
+
+**Firmware/SPA Build Status:**
+- Firmware compiled: `build/mousetrap_arduino.ino.bin`
+- SPA built: `build/littlefs.bin`
+- Ready for OTA deployment from dashboard
+
+---
+
+### Previous Work: Mobile App Snapshot Feature & Server Rebuild Fix
+
+**Status:** Complete - Snapshot viewer working end-to-end in mobile app
+
+**What Was Implemented:**
+
+1. **Camera Snapshot Feature in Mobile App**
+   - Device detail screen (`DeviceDetailScreen.tsx`) now includes snapshot viewer
+   - "Request Snapshot" button sends command to device via server API
+   - Device captures photo, sends via MQTT to server
+   - Server stores snapshot in database (base64 JPEG in `devices.last_snapshot`)
+   - App polls API and displays image when available
+   - Timestamp shown below image
+   - Button disabled when device offline, shows spinner while waiting
+
+2. **Database Migration for Snapshot Storage**
+   - Migration `011_add_device_snapshot.sql`:
+     - Added `last_snapshot` TEXT column to devices table
+     - Added `last_snapshot_at` TIMESTAMP column
+     - Added index on `last_snapshot_at`
+   - Server stores snapshots in database instead of just forwarding via WebSocket
+   - Enables persistent snapshot retrieval via REST API
+
+3. **Server-Side Snapshot Handling**
+   - `mqtt.service.ts`: `handleCameraSnapshot()` now stores image in database
+   - `devices.routes.ts`: Device detail endpoint returns `lastSnapshot` and `lastSnapshotTimestamp`
+   - Mobile app API service maps these fields to `last_snapshot` and `last_snapshot_timestamp`
+
+4. **Critical Fix: Server TypeScript Rebuild**
+   - Issue: TypeScript changes weren't being compiled before pm2 restart
+   - Server was running old JavaScript without snapshot storage logic
+   - Fix: Always run `npm run build` before `pm2 restart mqtt-server`
+
+**Files Modified:**
+- `Server/migrations/011_add_device_snapshot.sql` - New migration
+- `Server/src/services/mqtt.service.ts` - Store snapshots in database
+- `Server/src/routes/devices.routes.ts` - Return snapshot in device detail
+- `mobile-app/src/screens/DeviceDetailScreen.tsx` - Snapshot UI with polling
+- `mobile-app/src/services/api.ts` - Map snapshot fields from server
+
+---
+
+### Previous Work: Push Notifications & Mobile App Foundation
+
+**Status:** Complete - Server infrastructure ready, Expo mobile app created
+
+**What Was Implemented:**
+
+1. **Server Push Notification Infrastructure**
+   - Database migration `010_create_push_notifications.sql`:
+     - `push_tokens` table for user device tokens (iOS, Android, web)
+     - `notification_preferences` table for per-user settings
+     - `notification_log` table for tracking sent notifications
+   - `push.service.ts` with full Expo SDK integration:
+     - Token registration/removal
+     - Preference management (trap alerts, device offline, low battery)
+     - Quiet hours support
+     - Multi-device support per user
+   - `push.routes.ts` API endpoints:
+     - `POST /api/push/register-token` - Register push token
+     - `DELETE /api/push/token` - Remove push token
+     - `GET /api/push/preferences` - Get/update notification preferences
+     - `POST /api/push/test` - Send test notification
+   - MQTT alert integration sends push notifications to all tenant users
+
+2. **React Native Mobile App**
+   - Location: `/Users/wadehargrove/Documents/MouseTrap/mobile-app/`
+   - Built with Expo SDK 54, TypeScript, New Architecture
+   - Full authentication and device/alert management
+   - Push notification infrastructure (requires dev build for testing)
+   - See "Mobile App" section above for complete details
+
+**Next Steps:**
+- Configure EAS project ID for push notifications (requires Apple Developer account)
+- Build for physical devices and test push notifications
+- Set up TestFlight and Play Store internal testing
+
+---
+
+## Previous Session Notes (2025-11-29 - Earlier)
+
+### Device Claim Recovery & Superadmin Snapshot Fix
 
 **Status:** Complete - Both Kitchen and Biggy devices working
 
@@ -419,10 +1084,35 @@ brew services start mosquitto
 - [x] Fixed factory reset to preserve server claim for recovery
 - [x] Fixed superadmin cross-tenant snapshot access
 - [x] Fixed WebSocket snapshot forwarding for cross-tenant devices
+- [x] **Implemented push notification server infrastructure**
+- [x] **Created React Native mobile app** (`/Users/wadehargrove/Documents/MouseTrap/mobile-app/`)
+- [x] Mobile app: Login, device list, alerts, settings, push notification setup
+- [x] Mobile app: Working in Expo Go (minus push notifications)
+- [x] Mobile app: EAS Build configured for dev/preview/production builds
+- [x] Mobile app: Device detail screen with snapshot viewer - **WORKING**
+- [x] Server: Snapshot storage in database (migration 011)
+- [x] **Timezone auto-detection & storage** (migration 012, Setup.svelte, setup.routes.ts)
+- [x] **Snapshot timestamp fixes** (Invalid Date, 8-hour offset)
+- [x] **Stale snapshot overlay** in mobile app (shows "X min/hours ago" badge)
+- [x] **Escalating notification system planned** - see `/Users/wadehargrove/.claude/plans/groovy-sprouting-eich.md`
+- [x] **Escalating notification system Phase 1 (Server)** - migration, service, API endpoints, cron job
+- [x] **Escalating notification system Phase 2 (Firmware)** - alert state machine, buzzer/LED patterns, NVS persistence, MQTT handlers
+- [x] **Escalating notification system Phase 3 (Mobile App)** - escalation settings UI, emergency contacts management
+- [x] **Escalating notification system Phase 4 (SMS/Email)** - Twilio SMS, Nodemailer email, rate limiting
+- [x] **Mobile app device actions** - Clear Alerts and Test Alert buttons
+- [x] **Fixed trapState display** - Server now returns `trapState` field computed from alerts
+- [x] **Fixed MQTT alert_reset** - Now uses `mqtt_client_id` (no colons) instead of `mac_address`
+- [x] **Immediate email on alert** - Emergency contacts notified immediately, not just via cron
+- [x] **Fixed Device Settings location save** - Superadmin PATCH endpoint now bypasses tenant filter
+- [x] **Location as snapshot card title** - Device detail shows location in card header
 
 **Pending:**
-- [ ] Deploy updated firmware to Biggy (factory reset fix compiled but not uploaded)
+- [ ] Deploy updated firmware to Biggy (escalation system compiled but not uploaded)
+- [ ] Configure Twilio credentials in `.env` for production SMS
 - [ ] Implement new button handler (click=reset alarm, 2s=reboot, 10s=factory reset)
+- [ ] Mobile app: Configure EAS project ID (`eas init`) - requires Apple Developer account
+- [ ] Mobile app: Build for physical devices and test push notifications
+- [ ] Mobile app: Set up TestFlight and Play Store internal testing
 
 ### Known Issues
 
@@ -456,10 +1146,14 @@ brew services start mosquitto
 - `tenant/{tenantId}/device/{MAC}/alert` - Alert notifications
 - `tenant/{tenantId}/device/{MAC}/alert_cleared` - Alert cleared confirmation
 - `tenant/{tenantId}/device/{clientId}/rotation_ack` - Credential rotation ACK
+- `tenant/{tenantId}/device/{clientId}/escalation_update` - Alert level changed
+- `tenant/{tenantId}/device/{clientId}/alert_sync` - Alert state sync on reconnect
 
 ### Server to Device
 - `tenant/{tenantId}/device/{clientId}/command/reboot` - Reboot command
-- `tenant/{tenantId}/device/{clientId}/command/alert_reset` - Clear alert
+- `tenant/{tenantId}/device/{clientId}/command/alert_reset` - Clear alert (legacy)
+- `tenant/{tenantId}/device/{clientId}/command/alert_clear` - Clear alert with reason/alertId
+- `tenant/{tenantId}/device/{clientId}/command/escalation` - Update preset/timing, force level
 - `tenant/{tenantId}/device/{clientId}/command/rotate_credentials` - Credential rotation
 - `global/firmware/latest` - Global firmware updates
 - `global/filesystem/latest` - Global filesystem updates
@@ -517,6 +1211,7 @@ curl -d @/tmp/request.json ...
 | Server API | [Server/docs/API-REFERENCE.md](./Server/docs/API-REFERENCE.md) |
 | MQTT setup | [Server/docs/MQTT-SETUP.md](./Server/docs/MQTT-SETUP.md) |
 | Server deployment | [Server/docs/DEPLOYMENT.md](./Server/docs/DEPLOYMENT.md) |
+| **Mobile App** | **See "Mobile App" section above** |
 
 ---
 

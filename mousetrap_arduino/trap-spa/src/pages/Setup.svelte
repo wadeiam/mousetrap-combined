@@ -56,6 +56,9 @@
   let isStandaloneFlow = false;
   let standaloneLoading = false;
 
+  // Timezone - auto-detected from browser
+  let timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+
   // Validation - WiFi password must be at least 8 characters (WPA requirement)
   $: isStep2Valid = (selectedNetwork || manualSSID.trim()) &&
     (selectedNetwork !== 'manual' || manualSSID.trim()) &&
@@ -254,7 +257,8 @@
         email,
         accountPassword,
         deviceName,
-        isNewAccount
+        isNewAccount,
+        timezone
       });
 
       // Start polling for registration progress

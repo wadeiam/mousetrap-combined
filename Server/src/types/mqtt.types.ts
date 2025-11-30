@@ -81,7 +81,7 @@ export interface FilesystemUpdateMessage {
  * Published: When server needs device to perform action
  */
 export interface DeviceCommandMessage {
-  command: 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert' | 'ota_update' | 'capture_snapshot' | 'update_tenant';
+  command: 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert' | 'ota_update' | 'capture_snapshot' | 'update_tenant' | 'escalation' | 'alert_clear' | 'test_trigger';
   params?: Record<string, any>;  // Command-specific parameters
   timestamp?: number;            // Unix timestamp (ms)
   requestId?: string;            // For tracking command execution
@@ -95,6 +95,14 @@ export interface DeviceCommandMessage {
   tenantId?: string;             // New tenant ID
   deviceId?: string;             // Device ID (usually unchanged)
   deviceName?: string;           // Device name (usually unchanged)
+  // Escalation fields (when command is 'escalation')
+  level?: number;                // Escalation level 1-5
+  buzzer?: boolean;              // Enable buzzer
+  buzzerPattern?: string;        // 'single', 'triple', 'continuous_short', 'continuous'
+  led?: string;                  // 'solid_red', 'slow_blink', 'fast_blink', 'rapid_blink', 'rapid_flash'
+  // Alert clear fields (when command is 'alert_clear')
+  alertId?: string;              // Alert ID being cleared
+  reason?: string;               // Reason for clearing ('acknowledged', 'resolved', etc.)
 }
 
 // ============================================================================

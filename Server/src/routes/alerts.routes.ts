@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { Pool } from 'pg';
 import { authenticate, AuthRequest } from '../middleware/auth.middleware';
 import { validateUuid } from '../middleware/validation.middleware';
+import { getEscalationService } from '../services/escalation.service';
 
 const router = Router();
 
@@ -163,25 +164,60 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // POST /alerts/:id/acknowledge - Acknowledge an alert
+// This stops escalation and notifies the device
 router.post('/:id/acknowledge', validateUuid(), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
 
-    const result = await dbPool.query(
-      `UPDATE alerts
-       SET status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $3, updated_at = NOW()
-       WHERE id = $1 AND tenant_id = $2 AND status = 'new'
-       RETURNING *`,
-      [id, tenantId, userId]
+    // Check if user is a Master Tenant superadmin (can acknowledge any alert)
+    const MASTER_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+    const superadminCheck = await dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1 AND tenant_id = $2 AND role = 'superadmin'`,
+      [userId, MASTER_TENANT_ID]
     );
+    const isMasterTenantAdmin = superadminCheck.rows.length > 0;
+
+    // Build the query - superadmins can acknowledge any alert
+    let query = `
+      UPDATE device_alerts
+      SET alert_status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2
+      WHERE id = $1 AND alert_status = 'active'
+    `;
+    const params: any[] = [id, userId];
+
+    if (!isMasterTenantAdmin) {
+      query = `
+        UPDATE device_alerts
+        SET alert_status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $3
+        WHERE id = $1 AND tenant_id = $2 AND alert_status = 'active'
+      `;
+      params.push(tenantId);
+      params[1] = tenantId;
+      params[2] = userId;
+    }
+
+    query += ' RETURNING *';
+    const result = await dbPool.query(query, isMasterTenantAdmin ? [id, userId] : [id, tenantId, userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
         error: 'Alert not found or already acknowledged',
       });
+    }
+
+    // Use the escalation service to handle acknowledgment (stops escalation, notifies device)
+    const escalationService = getEscalationService();
+    if (escalationService) {
+      try {
+        await escalationService.acknowledgeAlert(id);  // UUID string
+      } catch (escError: any) {
+        console.error('[Alerts] Escalation service acknowledge error:', escError.message);
+        // Don't fail the request if escalation service has issues
+      }
     }
 
     res.json({

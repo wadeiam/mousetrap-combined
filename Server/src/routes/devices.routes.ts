@@ -95,6 +95,14 @@ router.get('/', async (req: AuthRequest, res: Response) => {
           WHEN d.online = true AND d.last_seen > NOW() - INTERVAL '15 minutes' THEN 'online'
           ELSE 'offline'
         END as status,
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM alerts a
+            WHERE a.device_id = d.id
+            AND a.status IN ('new', 'acknowledged')
+          ) THEN 'triggered'
+          ELSE 'set'
+        END as "trapState",
         d.location,
         d.firmware_version as "firmwareVersion",
         d.hardware_version as "hardwareVersion",
@@ -271,6 +279,14 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
             WHEN d.online = true AND d.last_seen > NOW() - INTERVAL '15 minutes' THEN 'online'
             ELSE 'offline'
           END as status,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM alerts a
+              WHERE a.device_id = d.id
+              AND a.status IN ('new', 'acknowledged')
+            ) THEN 'triggered'
+            ELSE 'set'
+          END as "trapState",
           d.location,
           d.firmware_version as "firmwareVersion",
           d.hardware_version as "hardwareVersion",
@@ -280,7 +296,10 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
           d.local_ip as "ipAddress",
           d.mac_address as "macAddress",
           d.created_at as "createdAt",
-          d.updated_at as "updatedAt"
+          d.updated_at as "updatedAt",
+          d.last_snapshot as "lastSnapshot",
+          FLOOR(EXTRACT(EPOCH FROM d.last_snapshot_at) * 1000)::bigint as "lastSnapshotTimestamp",
+          d.timezone
         FROM devices d
         LEFT JOIN tenants t ON d.tenant_id = t.id
         WHERE d.id = $1 AND d.unclaimed_at IS NULL`,
@@ -305,6 +324,14 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
             WHEN d.online = true AND d.last_seen > NOW() - INTERVAL '15 minutes' THEN 'online'
             ELSE 'offline'
           END as status,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM alerts a
+              WHERE a.device_id = d.id
+              AND a.status IN ('new', 'acknowledged')
+            ) THEN 'triggered'
+            ELSE 'set'
+          END as "trapState",
           d.location,
           d.firmware_version as "firmwareVersion",
           d.hardware_version as "hardwareVersion",
@@ -314,7 +341,10 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
           d.local_ip as "ipAddress",
           d.mac_address as "macAddress",
           d.created_at as "createdAt",
-          d.updated_at as "updatedAt"
+          d.updated_at as "updatedAt",
+          d.last_snapshot as "lastSnapshot",
+          FLOOR(EXTRACT(EPOCH FROM d.last_snapshot_at) * 1000)::bigint as "lastSnapshotTimestamp",
+          d.timezone
         FROM devices d
         LEFT JOIN tenants t ON d.tenant_id = t.id
         WHERE d.id = $1 AND d.tenant_id = $2 AND d.unclaimed_at IS NULL`,
@@ -387,11 +417,20 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 });
 
 // PATCH /devices/:id - Update a device
+// Superadmins can update any device regardless of tenant
 router.patch('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { location, label, paused } = req.body;
     const tenantId = req.user!.tenantId;
+    const userId = req.user!.userId;
+
+    // Check if user is superadmin (has implicit access to all tenants)
+    const superadminCheck = await dbPool.query(
+      `SELECT user_is_superadmin($1) as is_superadmin`,
+      [userId]
+    );
+    const isSuperadmin = superadminCheck.rows[0].is_superadmin;
 
     // Build dynamic update query
     const updates: string[] = [];
@@ -423,18 +462,34 @@ router.patch('/:id', async (req: AuthRequest, res: Response) => {
       });
     }
 
-    params.push(id, tenantId);
-
-    const result = await dbPool.query(
-      `UPDATE devices
-       SET ${updates.join(', ')}
-       WHERE id = $${paramIndex} AND tenant_id = $${paramIndex + 1}
-       RETURNING
-        id, tenant_id, mac_address, online, firmware_version, filesystem_version,
-        uptime, heap_free, rssi, local_ip, location, label, paused, last_seen,
-        created_at, updated_at`,
-      params
-    );
+    let result;
+    if (isSuperadmin) {
+      // Superadmins can update any device
+      params.push(id);
+      result = await dbPool.query(
+        `UPDATE devices
+         SET ${updates.join(', ')}
+         WHERE id = $${paramIndex} AND unclaimed_at IS NULL
+         RETURNING
+          id, tenant_id, mac_address, online, firmware_version, filesystem_version,
+          uptime, heap_free, rssi, local_ip, location, label, paused, last_seen,
+          created_at, updated_at`,
+        params
+      );
+    } else {
+      // Regular users can only update devices in their tenant
+      params.push(id, tenantId);
+      result = await dbPool.query(
+        `UPDATE devices
+         SET ${updates.join(', ')}
+         WHERE id = $${paramIndex} AND tenant_id = $${paramIndex + 1} AND unclaimed_at IS NULL
+         RETURNING
+          id, tenant_id, mac_address, online, firmware_version, filesystem_version,
+          uptime, heap_free, rssi, local_ip, location, label, paused, last_seen,
+          created_at, updated_at`,
+        params
+      );
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -697,35 +752,50 @@ router.post('/:id/clear-alerts', requireRole('admin', 'superadmin'), async (req:
     const { id } = req.params;
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
+    const userRole = req.user!.role;
 
-    // Get device info
-    const deviceResult = await dbPool.query(
-      'SELECT mac_address FROM devices WHERE id = $1 AND tenant_id = $2',
-      [id, tenantId]
-    );
+    console.log(`[Clear Alerts] Attempting for device=${id}, tenantId=${tenantId}, userId=${userId}, role=${userRole}`);
+
+    // Get device info - superadmins can access any device
+    let deviceResult;
+    if (userRole === 'superadmin') {
+      deviceResult = await dbPool.query(
+        'SELECT mac_address, mqtt_client_id, tenant_id FROM devices WHERE id = $1',
+        [id]
+      );
+    } else {
+      deviceResult = await dbPool.query(
+        'SELECT mac_address, mqtt_client_id, tenant_id FROM devices WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId]
+      );
+    }
 
     if (deviceResult.rows.length === 0) {
+      console.log(`[Clear Alerts] Device not found: id=${id}, tenantId=${tenantId}`);
       return res.status(404).json({
         success: false,
         error: 'Device not found',
       });
     }
 
-    const { mac_address } = deviceResult.rows[0];
+    const { mqtt_client_id, tenant_id: deviceTenantId } = deviceResult.rows[0];
 
-    // Clear all active alerts for this device
+    // Clear all active alerts for this device (use device's tenant_id for superadmins)
+    const effectiveTenantId = userRole === 'superadmin' ? deviceTenantId : tenantId;
     const result = await dbPool.query(
       `UPDATE alerts
        SET status = 'resolved', resolved_at = NOW(), resolved_by = $3, updated_at = NOW()
        WHERE tenant_id = $1 AND device_id = $2 AND status IN ('new', 'acknowledged')
        RETURNING id`,
-      [tenantId, id, userId]
+      [effectiveTenantId, id, userId]
     );
 
-    // Send MQTT command to device to reset alert state
+    // Send MQTT command to device to reset alert state (use mqtt_client_id, not mac_address)
     if (result.rows.length > 0) {
-      await mqttService.resetDeviceAlert(tenantId, mac_address);
-      console.log(`[Clear Alerts] Sent alert_reset command to ${mac_address}`);
+      await mqttService.resetDeviceAlert(effectiveTenantId, mqtt_client_id);
+      console.log(`[Clear Alerts] Sent alert_reset command to ${mqtt_client_id}, cleared ${result.rows.length} alerts`);
+    } else {
+      console.log(`[Clear Alerts] No active alerts to clear for ${mqtt_client_id}`);
     }
 
     res.json({
@@ -737,6 +807,156 @@ router.post('/:id/clear-alerts', requireRole('admin', 'superadmin'), async (req:
     });
   } catch (error: any) {
     console.error('Clear alerts error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+});
+
+// ============================================================================
+// POST /devices/:id/test-alert - Trigger a test alert for a device (admin or superadmin only)
+// ============================================================================
+router.post('/:id/test-alert', requireRole('admin', 'superadmin'), async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+    const isSuperadmin = req.user!.role === 'superadmin';
+
+    // Get device info - superadmins can access any device
+    let deviceQuery = 'SELECT id, name, mac_address, mqtt_client_id, tenant_id FROM devices WHERE id = $1';
+    const queryParams: any[] = [id];
+
+    if (!isSuperadmin) {
+      deviceQuery += ' AND tenant_id = $2';
+      queryParams.push(tenantId);
+    }
+
+    const deviceResult = await dbPool.query(deviceQuery, queryParams);
+
+    if (deviceResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Device not found',
+      });
+    }
+
+    const device = deviceResult.rows[0];
+    const deviceTenantId = device.tenant_id;
+
+    // Create a test alert in the database
+    const alertResult = await dbPool.query(
+      `INSERT INTO alerts (device_id, tenant_id, severity, status, sensor_data, triggered_at)
+       VALUES ($1, $2, 'high', 'new', $3, NOW())
+       RETURNING id, triggered_at`,
+      [
+        id,
+        deviceTenantId,
+        JSON.stringify({
+          alert_type: 'trap_triggered',
+          message: 'Test alert triggered from mobile app',
+          severity: 'high',
+          is_test: true,
+        }),
+      ]
+    );
+
+    const alertId = alertResult.rows[0].id;
+
+    const deviceName = device.name || device.mac_address;
+    console.log(`[Test Alert] Created test alert ${alertId} for device ${deviceName}`);
+
+    // Emit WebSocket event for immediate UI update
+    const mqttService = req.app.locals.mqttService;
+    if (mqttService) {
+      mqttService.emit('device:alert', {
+        id: alertId,
+        deviceId: id,
+        tenantId: deviceTenantId,
+        severity: 'high',
+        status: 'new',
+        type: 'trap_triggered',
+        message: 'Test alert triggered from mobile app',
+        createdAt: new Date().toISOString(),
+      });
+
+      // Send immediate notifications to emergency contacts (same as real alerts)
+      // This is exposed as a public method we can call
+      if (typeof mqttService.notifyEmergencyContactsForTestAlert === 'function') {
+        mqttService.notifyEmergencyContactsForTestAlert(deviceTenantId, deviceName, alertId).catch((err: Error) => {
+          console.error('[Test Alert] Failed to notify emergency contacts:', err.message);
+        });
+      }
+
+      // Send MQTT command to device to trigger buzzer/LED (without taking photos)
+      if (typeof mqttService.triggerTestAlert === 'function') {
+        mqttService.triggerTestAlert(deviceTenantId, device.mqtt_client_id).catch((err: Error) => {
+          console.error('[Test Alert] Failed to send MQTT trigger command:', err.message);
+        });
+      }
+    }
+
+    // Also send push notifications
+    const { getPushService } = require('../services/push.service');
+    const pushService = getPushService();
+    if (pushService) {
+      pushService.handleAlertNotification({
+        alertId,
+        deviceId: id,
+        deviceName,
+        alertType: 'trap_triggered',
+        severity: 'high',
+        tenantId: deviceTenantId,
+        message: 'Test alert triggered from mobile app',
+      }).catch((err: Error) => {
+        console.error('[Test Alert] Failed to send push notification:', err.message);
+      });
+    }
+
+    // Send immediate email/SMS to emergency contacts
+    const { getEmailService } = require('../services/email.service');
+    const { getSmsService } = require('../services/sms.service');
+
+    // Get emergency contacts for users in this tenant
+    const usersResult = await dbPool.query(
+      `SELECT DISTINCT utm.user_id FROM user_tenant_memberships utm WHERE utm.tenant_id = $1`,
+      [deviceTenantId]
+    );
+
+    for (const user of usersResult.rows) {
+      const contactsResult = await dbPool.query(
+        `SELECT contact_type, contact_value, contact_name FROM emergency_contacts WHERE user_id = $1 AND enabled = true`,
+        [user.user_id]
+      );
+
+      const emailService = getEmailService();
+      const smsService = getSmsService();
+
+      for (const contact of contactsResult.rows) {
+        try {
+          if (contact.contact_type === 'email' && emailService?.isEnabled()) {
+            await emailService.sendTrapAlert(contact.contact_value, deviceName, 0, 1, contact.contact_name);
+            console.log(`[Test Alert] Email sent to ${contact.contact_value}`);
+          } else if (contact.contact_type === 'sms' && smsService?.isEnabled()) {
+            await smsService.sendTrapAlert(contact.contact_value, deviceName, 0, 1, contact.contact_name);
+            console.log(`[Test Alert] SMS sent to ${contact.contact_value}`);
+          }
+        } catch (err: any) {
+          console.error(`[Test Alert] Failed to notify ${contact.contact_type}:`, err.message);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        alertId,
+        message: 'Test alert created successfully',
+        deviceName: device.name || device.mac_address,
+      },
+    });
+  } catch (error: any) {
+    console.error('Test alert error:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',

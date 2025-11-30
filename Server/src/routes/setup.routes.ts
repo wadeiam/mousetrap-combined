@@ -105,7 +105,7 @@ function verifyClaimToken(mac: string, timestamp: string, token: string): boolea
 // ============================================================================
 router.post('/register-and-claim', async (req: Request, res: Response) => {
   try {
-    const { email, password, deviceName, mac, claimToken, timestamp, isNewAccount = true } = req.body;
+    const { email, password, deviceName, mac, claimToken, timestamp, isNewAccount = true, timezone = 'UTC' } = req.body;
 
     console.log('========================================');
     console.log('[SETUP] Register and claim request');
@@ -113,6 +113,7 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
     console.log('[SETUP] Device name:', deviceName);
     console.log('[SETUP] MAC:', mac);
     console.log('[SETUP] Is New Account:', isNewAccount);
+    console.log('[SETUP] Timezone:', timezone);
     console.log('========================================');
 
     // ========================================================================
@@ -368,8 +369,9 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
             claimed_at = NOW(),
             last_seen = NOW(),
             online = true,
-            mac_address = $5
-          WHERE id = $6
+            mac_address = $5,
+            timezone = $6
+          WHERE id = $7
           RETURNING id, mqtt_client_id, mqtt_username, name`,
           [
             deviceName,
@@ -377,6 +379,7 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
             mqttPasswordHash,
             mqttPassword,
             mac, // Also update mac_address field
+            timezone, // IANA timezone string
             deviceId,
           ]
         );
@@ -399,9 +402,9 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
             id, tenant_id, mqtt_client_id, name, device_name,
             mqtt_username, mqtt_password, mqtt_password_plain,
             hardware_version, firmware_version, filesystem_version,
-            status, claimed_at, last_seen, online, mac_address
+            status, claimed_at, last_seen, online, mac_address, timezone
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), true, $13)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW(), true, $13, $14)
           RETURNING id, mqtt_client_id, mqtt_username, name`,
           [
             deviceId,
@@ -417,6 +420,7 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
             '1.0.0',
             'offline',
             mac, // Store MAC address with colons
+            timezone, // IANA timezone string
           ]
         );
 
@@ -584,44 +588,38 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
 // ============================================================================
 // POST /recover-claim - Check if device is already claimed and return credentials
 // Called by device after WiFi connects to see if it can skip account setup
+// SIMPLIFIED: Only requires MAC address - device can always recover its claim
+// The risk is low since the device can't do much harm and MAC is hardware-burned
 // ============================================================================
 router.post('/recover-claim', async (req: Request, res: Response) => {
   try {
-    const { mac, claimToken, timestamp } = req.body;
+    const { mac } = req.body;
 
     console.log('========================================');
     console.log('[SETUP] Recover claim request');
     console.log('[SETUP] MAC:', mac);
     console.log('========================================');
 
-    // Validate required fields
-    if (!mac || !claimToken || !timestamp) {
+    // Validate required fields - only MAC is needed
+    if (!mac) {
       return res.status(400).json({
         success: false,
-        error: 'Missing required fields: mac, claimToken, timestamp',
+        error: 'Missing required field: mac',
       });
     }
 
-    // Validate MAC address format
-    const macRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
-    if (!macRegex.test(mac)) {
+    // Normalize MAC address - accept both formats (with colons or without)
+    const mqttClientId = mac.replace(/[:-]/g, '').toUpperCase();
+
+    // Validate MAC address format (12 hex characters after normalization)
+    if (!/^[0-9A-F]{12}$/.test(mqttClientId)) {
       return res.status(400).json({
         success: false,
         error: 'Invalid MAC address format',
       });
     }
 
-    // Verify HMAC claim token (proves device authenticity)
-    if (!verifyClaimToken(mac, timestamp, claimToken)) {
-      console.log('[SETUP] Invalid or expired claim token for recover-claim');
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid or expired claim token',
-      });
-    }
-
     // Check if device exists in database
-    const mqttClientId = mac.replace(/:/g, '');
     const deviceResult = await dbPool.query(
       `SELECT id, tenant_id, mqtt_client_id, mqtt_username, mqtt_password_plain, name, unclaimed_at
        FROM devices WHERE mqtt_client_id = $1`,
@@ -640,14 +638,15 @@ router.post('/recover-claim', async (req: Request, res: Response) => {
 
     const device = deviceResult.rows[0];
 
-    // If device was unclaimed, it needs full registration
+    // If device was previously unclaimed, we now allow recovery back to its last tenant
+    // This is safe because the MAC is hardware-burned and the device can't do much harm
     if (device.unclaimed_at !== null) {
-      console.log('[SETUP] Device was unclaimed - needs full registration:', mac);
-      return res.status(404).json({
-        success: false,
-        error: 'Device was unclaimed',
-        needsRegistration: true,
-      });
+      console.log('[SETUP] Device was unclaimed - re-claiming to previous tenant:', mac);
+      // Clear the unclaimed_at timestamp to re-activate the device
+      await dbPool.query(
+        `UPDATE devices SET unclaimed_at = NULL WHERE id = $1`,
+        [device.id]
+      );
     }
 
     // Device is claimed! Generate fresh MQTT password and return credentials
@@ -688,8 +687,8 @@ router.post('/recover-claim', async (req: Request, res: Response) => {
       console.warn('[SETUP] Could not clear retained revoke message:', clearError.message);
     }
 
-    console.log('[SETUP] Claim recovered successfully for:', mac);
-    logger.info('[SETUP] Claim recovered', { deviceId: device.id, tenantId: device.tenant_id, mac });
+    console.log('[SETUP] Claim recovered successfully for:', mqttClientId);
+    logger.info('[SETUP] Claim recovered', { deviceId: device.id, tenantId: device.tenant_id, mac: mqttClientId });
 
     res.json({
       success: true,

@@ -10,16 +10,16 @@
 			"roles":	[{
 					"rolename":	"device"
 				}],
-			"password":	"sr896pggAcJOVfTV3Tg+UO9MPBQ6sc0ihOW7FWmQRle7ABqcL5iabWtnANrF8oXX5apLAADsdCYlwH/3gdjoSg==",
-			"salt":	"vaRz4yARHfO8oDg4",
+			"password":	"Z7f/JZaVCfeHT2/pf47JKw8i07Eab/jBucCCstVeUOJSaApbk6397bDO1TCdXRPyjdwi0y6xM/FIiFVc4kg+Hw==",
+			"salt":	"7MDc6+4ZnFbspE87",
 			"iterations":	101
 		}, {
 			"username":	"D0CF13155060",
 			"roles":	[{
 					"rolename":	"device"
 				}],
-			"password":	"l17Kl12E9f12qvZEnlTzogJXHNZ8RkgziqyBgSKkfMIKEkoMPuDLBBO8RuAHyt/1/nGqQ/x/X8WBDu4hZxNwHg==",
-			"salt":	"gAs2NqgFdAIzJpHD",
+			"password":	"4118A/sRMaLb4UXEkY2mzJi+S7yDF6biZawBrPWh/Z0eimic0DBqzqYCsLFlW2/xkMmtYOSHGPavPV+LGMTaLQ==",
+			"salt":	"Bt2MN0PnG2xfQMxf",
 			"iterations":	101
 		}, {
 			"username":	"mqtt_client",

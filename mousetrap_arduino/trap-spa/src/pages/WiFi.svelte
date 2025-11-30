@@ -236,7 +236,7 @@
     </Card>
 
     <div class="back-link">
-      <a href="/">← Back to Dashboard</a>
+      <a href="#/">← Back to Dashboard</a>
     </div>
   {/if}
 </div>

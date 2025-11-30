@@ -5,12 +5,15 @@
   let systemLogs = [];
   let previousLogs = [];
   let olderLogs = [];
+  let accessLogs = [];
   let systemLogsLoading = true;
   let previousLogsLoading = true;
   let olderLogsLoading = true;
+  let accessLogsLoading = true;
   let systemLogsError = null;
   let previousLogsError = null;
   let olderLogsError = null;
+  let accessLogsError = null;
 
   // Auto-refresh state
   let autoRefresh = false;
@@ -21,16 +24,19 @@
   let systemLogsFilter = '';
   let previousLogsFilter = '';
   let olderLogsFilter = '';
+  let accessLogsFilter = '';
 
   // Expand/collapse state
   let systemLogsExpanded = true;
   let previousLogsExpanded = true;
   let olderLogsExpanded = false;  // Collapsed by default
+  let accessLogsExpanded = true;
 
   // Scroll position tracking
   let systemLogsContainer;
   let previousLogsContainer;
   let olderLogsContainer;
+  let accessLogsContainer;
 
   // Filtered logs
   $: filteredSystemLogs = systemLogs.filter(log =>
@@ -41,6 +47,9 @@
   );
   $: filteredOlderLogs = olderLogs.filter(log =>
     log.toLowerCase().includes(olderLogsFilter.toLowerCase())
+  );
+  $: filteredAccessLogs = accessLogs.filter(log =>
+    log.toLowerCase().includes(accessLogsFilter.toLowerCase())
   );
 
   async function fetchSystemLogs(showLoading = true) {
@@ -127,6 +136,34 @@
     }
   }
 
+  async function fetchAccessLogs(showLoading = true) {
+    // Save scroll position before updating
+    const scrollTop = accessLogsContainer?.scrollTop || 0;
+
+    if (showLoading) {
+      accessLogsLoading = true;
+    }
+    accessLogsError = null;
+    try {
+      accessLogs = await api.getAccessLogs();
+    } catch (err) {
+      console.error('Failed to fetch access logs:', err);
+      accessLogsError = err.message;
+      accessLogs = [];
+    } finally {
+      if (showLoading) {
+        accessLogsLoading = false;
+      }
+
+      // Restore scroll position after DOM updates
+      if (accessLogsContainer && scrollTop > 0) {
+        requestAnimationFrame(() => {
+          accessLogsContainer.scrollTop = scrollTop;
+        });
+      }
+    }
+  }
+
   function toggleAutoRefresh() {
     autoRefresh = !autoRefresh;
     if (autoRefresh) {
@@ -142,6 +179,7 @@
       fetchSystemLogs(false);
       fetchPreviousLogs(false);
       fetchOlderLogs(false);
+      fetchAccessLogs(false);
     }, refreshSeconds * 1000);
   }
 
@@ -175,6 +213,10 @@
     olderLogsFilter = '';
   }
 
+  function clearAccessLogsFilter() {
+    accessLogsFilter = '';
+  }
+
   function toggleSystemLogsExpanded() {
     systemLogsExpanded = !systemLogsExpanded;
   }
@@ -187,10 +229,15 @@
     olderLogsExpanded = !olderLogsExpanded;
   }
 
+  function toggleAccessLogsExpanded() {
+    accessLogsExpanded = !accessLogsExpanded;
+  }
+
   onMount(() => {
     fetchSystemLogs();
     fetchPreviousLogs();
     fetchOlderLogs();
+    fetchAccessLogs();
   });
 
   onDestroy(() => {
@@ -213,7 +260,7 @@
       >
         {autoRefresh ? 'Auto-refresh On' : 'Auto-refresh Off'} ({refreshSeconds}s)
       </button>
-      <button class="btn" on:click={() => { fetchSystemLogs(true); fetchPreviousLogs(true); fetchOlderLogs(true); }}>
+      <button class="btn" on:click={() => { fetchSystemLogs(true); fetchPreviousLogs(true); fetchOlderLogs(true); fetchAccessLogs(true); }}>
         Refresh Now
       </button>
     </div>
@@ -371,6 +418,59 @@
         {#if olderLogsFilter && filteredOlderLogs.length > 0}
           <div class="filter-info">
             Showing {filteredOlderLogs.length} of {olderLogs.length} logs
+          </div>
+        {/if}
+      {/if}
+    </div>
+    {/if}
+  </div>
+
+  <!-- Access Logs Section -->
+  <div class="log-section">
+    <div class="log-header">
+      <button class="expand-btn" on:click={toggleAccessLogsExpanded}>
+        {accessLogsExpanded ? '▼' : '▶'}
+      </button>
+      <h2>Access Logs</h2>
+      <div class="log-controls">
+        <input
+          type="text"
+          class="filter-input"
+          placeholder="Filter logs..."
+          bind:value={accessLogsFilter}
+        />
+        {#if accessLogsFilter}
+          <button class="btn-small" on:click={clearAccessLogsFilter}>Clear</button>
+        {/if}
+        <button
+          class="btn-small"
+          on:click={() => exportLogs(accessLogs, 'access-logs.txt')}
+          disabled={accessLogs.length === 0}
+        >
+          Export
+        </button>
+      </div>
+    </div>
+
+    {#if accessLogsExpanded}
+    <div class="log-content" class:expanded={accessLogsExpanded} bind:this={accessLogsContainer}>
+      {#if accessLogsLoading}
+        <div class="loading">Loading access logs...</div>
+      {:else if accessLogsError}
+        <div class="error">Error: {accessLogsError}</div>
+      {:else if filteredAccessLogs.length === 0 && accessLogsFilter}
+        <div class="no-results">No logs match filter "{accessLogsFilter}"</div>
+      {:else if accessLogs.length === 0}
+        <div class="no-data">No access logs available</div>
+      {:else}
+        <div class="log-list">
+          {#each filteredAccessLogs as log}
+            <div class="log-line">{log}</div>
+          {/each}
+        </div>
+        {#if accessLogsFilter && filteredAccessLogs.length > 0}
+          <div class="filter-info">
+            Showing {filteredAccessLogs.length} of {accessLogs.length} logs
           </div>
         {/if}
       {/if}

@@ -2,16 +2,18 @@
   import { menuOpen } from '../lib/stores.js';
   import { link, currentRoute } from '../lib/router.js';
 
-  let settingsExpanded = false;
-  let logsExpanded = false;
-  let maintenanceExpanded = false;
+  let cameraExpanded = false;
+  let networkExpanded = false;
+  let deviceExpanded = false;
+  let systemExpanded = false;
 
   // Auto-expand based on current route
   $: {
     const path = $currentRoute;
-    settingsExpanded = path.startsWith('/servo') || path.startsWith('/calibration') || path.startsWith('/settings') || path.startsWith('/wifi');
-    logsExpanded = path.startsWith('/logs') || path.startsWith('/status') || path.startsWith('/gallery');
-    maintenanceExpanded = path.startsWith('/claim') || path.startsWith('/test') || path.startsWith('/firmware') || path.startsWith('/reboot');
+    cameraExpanded = path.startsWith('/gallery') || path.startsWith('/camera-settings');
+    networkExpanded = path.startsWith('/wifi') || path.startsWith('/claim');
+    deviceExpanded = path.startsWith('/servo') || path.startsWith('/calibration');
+    systemExpanded = path.startsWith('/logs') || path.startsWith('/firmware') || path.startsWith('/reboot') || path.startsWith('/test') || path.startsWith('/system-status');
   }
 
   function closeMenu() {
@@ -19,9 +21,10 @@
   }
 
   function toggleSubmenu(name) {
-    if (name === 'settings') settingsExpanded = !settingsExpanded;
-    if (name === 'logs') logsExpanded = !logsExpanded;
-    if (name === 'maintenance') maintenanceExpanded = !maintenanceExpanded;
+    if (name === 'camera') cameraExpanded = !cameraExpanded;
+    if (name === 'network') networkExpanded = !networkExpanded;
+    if (name === 'device') deviceExpanded = !deviceExpanded;
+    if (name === 'system') systemExpanded = !systemExpanded;
   }
 </script>
 
@@ -31,65 +34,72 @@
     Home
   </a>
 
-  <!-- Settings -->
-  <a href="#" on:click|preventDefault={() => toggleSubmenu('settings')} class="parent">
-    Settings
-    <span class="arrow" class:expanded={settingsExpanded}>▸</span>
+  <!-- Camera -->
+  <a href="#" on:click|preventDefault={() => toggleSubmenu('camera')} class="parent">
+    Camera
+    <span class="arrow" class:expanded={cameraExpanded}>▸</span>
   </a>
-  {#if settingsExpanded}
+  {#if cameraExpanded}
     <div class="submenu">
-      <a href="#/wifi" use:link on:click={closeMenu} class:active={$currentRoute === '/wifi'}>
-        WiFi Settings
-      </a>
-      <a href="#/servo" use:link on:click={closeMenu} class:active={$currentRoute === '/servo'}>
-        Servo Settings
-      </a>
-      <a href="#/calibration" use:link on:click={closeMenu} class:active={$currentRoute === '/calibration'}>
-        Calibration
-      </a>
-      <a href="#/settings" use:link on:click={closeMenu} class:active={$currentRoute === '/settings'}>
-        Options & Access
-      </a>
-    </div>
-  {/if}
-
-  <!-- Logs & Diagnostics -->
-  <a href="#" on:click|preventDefault={() => toggleSubmenu('logs')} class="parent">
-    Logs &amp; Diagnostics
-    <span class="arrow" class:expanded={logsExpanded}>▸</span>
-  </a>
-  {#if logsExpanded}
-    <div class="submenu">
-      <a href="#/status" use:link on:click={closeMenu} class:active={$currentRoute === '/status'}>
-        Status
-      </a>
-      <a href="#/logs" use:link on:click={closeMenu} class:active={$currentRoute === '/logs'}>
-        System Logs
-      </a>
       <a href="#/gallery" use:link on:click={closeMenu} class:active={$currentRoute === '/gallery'}>
         Gallery
       </a>
+      <a href="#/camera-settings" use:link on:click={closeMenu} class:active={$currentRoute === '/camera-settings'}>
+        Settings
+      </a>
     </div>
   {/if}
 
-  <!-- Maintenance -->
-  <a href="#" on:click|preventDefault={() => toggleSubmenu('maintenance')} class="parent">
-    Maintenance
-    <span class="arrow" class:expanded={maintenanceExpanded}>▸</span>
+  <!-- Network -->
+  <a href="#" on:click|preventDefault={() => toggleSubmenu('network')} class="parent">
+    Network
+    <span class="arrow" class:expanded={networkExpanded}>▸</span>
   </a>
-  {#if maintenanceExpanded}
+  {#if networkExpanded}
     <div class="submenu">
-      <a href="/claim" on:click={closeMenu}>
-        Claim
+      <a href="#/wifi" use:link on:click={closeMenu} class:active={$currentRoute === '/wifi'}>
+        WiFi
+      </a>
+      <a href="#/claim" use:link on:click={closeMenu} class:active={$currentRoute === '/claim'}>
+        Registration
+      </a>
+    </div>
+  {/if}
+
+  <!-- Device -->
+  <a href="#" on:click|preventDefault={() => toggleSubmenu('device')} class="parent">
+    Device
+    <span class="arrow" class:expanded={deviceExpanded}>▸</span>
+  </a>
+  {#if deviceExpanded}
+    <div class="submenu">
+      <a href="#/servo" use:link on:click={closeMenu} class:active={$currentRoute === '/servo'}>
+        Servo
+      </a>
+      <a href="#/calibration" use:link on:click={closeMenu} class:active={$currentRoute === '/calibration'}>
+        Sensor Calibration
+      </a>
+    </div>
+  {/if}
+
+  <!-- System -->
+  <a href="#" on:click|preventDefault={() => toggleSubmenu('system')} class="parent">
+    System
+    <span class="arrow" class:expanded={systemExpanded}>▸</span>
+  </a>
+  {#if systemExpanded}
+    <div class="submenu">
+      <a href="#/system-status" use:link on:click={closeMenu} class:active={$currentRoute === '/system-status'}>
+        Status
+      </a>
+      <a href="#/logs" use:link on:click={closeMenu} class:active={$currentRoute === '/logs'}>
+        Logs
+      </a>
+      <a href="#/firmware" use:link on:click={closeMenu} class:active={$currentRoute === '/firmware'}>
+        Firmware &amp; OTA
       </a>
       <a href="#/test" use:link on:click={closeMenu} class:active={$currentRoute === '/test'}>
         Test Alert
-      </a>
-      <a href="#/firmware" use:link on:click={closeMenu} class:active={$currentRoute === '/firmware'}>
-        Firmware / OTA
-      </a>
-      <a href="#/reboot" use:link on:click={closeMenu} class:active={$currentRoute.startsWith('/reboot')}>
-        Reboot
       </a>
     </div>
   {/if}

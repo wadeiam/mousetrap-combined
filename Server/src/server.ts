@@ -7,8 +7,12 @@ import dotenv from 'dotenv';
 import path from 'path';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
-import { MqttService } from './services/mqtt.service';
+import { MqttService, setMqttService } from './services/mqtt.service';
 import { logger } from './services/logger.service';
+import { initPushService, getPushService } from './services/push.service';
+import { initEscalationService, getEscalationService } from './services/escalation.service';
+import { initSmsService } from './services/sms.service';
+import { initEmailService } from './services/email.service';
 
 // Load environment variables
 dotenv.config();
@@ -45,6 +49,26 @@ dbPool.query('SELECT NOW()')
     });
   });
 
+// Initialize Push Notification service
+const pushService = initPushService(dbPool);
+console.log('✓ Push notification service initialized');
+
+// Initialize SMS service (for emergency contact escalation)
+const smsService = initSmsService();
+if (smsService.isEnabled()) {
+  console.log('✓ SMS service initialized (Twilio)');
+} else {
+  console.log('⚠ SMS service not configured - SMS alerts disabled');
+}
+
+// Initialize Email service (for emergency contact escalation)
+const emailService = initEmailService();
+if (emailService.isEnabled()) {
+  console.log('✓ Email service initialized (SMTP)');
+} else {
+  console.log('⚠ Email service not configured - Email alerts disabled');
+}
+
 // Initialize MQTT service
 const mqttService = new MqttService(
   {
@@ -78,6 +102,29 @@ mqttService.connect().catch((err: Error) => {
     stack: err.stack,
   });
 });
+
+// Set MQTT service singleton for other services to access
+setMqttService(mqttService);
+
+// Initialize Escalation service
+const escalationService = initEscalationService(dbPool);
+console.log('✓ Escalation service initialized');
+
+// Escalation cron job - runs every minute
+let escalationInterval: NodeJS.Timeout;
+const startEscalationCron = () => {
+  escalationInterval = setInterval(async () => {
+    try {
+      await escalationService.processEscalations();
+    } catch (error: any) {
+      logger.error('Escalation cron job failed', { error: error.message });
+    }
+  }, 60 * 1000); // Every minute
+  console.log('✓ Escalation cron job started (runs every minute)');
+};
+
+// Start cron after a short delay to let other services initialize
+setTimeout(startEscalationCron, 5000);
 
 // Handle MQTT errors to prevent process crash
 // In Node.js EventEmitter, unhandled 'error' events crash the process
@@ -225,7 +272,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
   res.on('finish', () => {
     const duration = Date.now() - start;
-    console.log(`${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
+    console.log(`${req.method} ${req.originalUrl} - ${res.statusCode} (${duration}ms)`);
   });
   next();
 });
@@ -337,6 +384,15 @@ try {
   console.warn('Logs routes not found - skipping');
 }
 
+try {
+  const pushRoutes = require('./routes/push.routes');
+  app.use('/api/push', pushRoutes.default || pushRoutes);
+  console.log('✓ Push notification routes loaded');
+  logger.info('Push notification API routes initialized');
+} catch (e) {
+  console.warn('Push notification routes not found - skipping');
+}
+
 // 404 handler
 app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not found' });
@@ -370,6 +426,7 @@ server.listen(PORT, HOST, () => {
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   logger.info('SIGTERM received, shutting down gracefully');
+  if (escalationInterval) clearInterval(escalationInterval);
   mqttService.disconnect();
   dbPool.end();
   process.exit(0);
@@ -378,6 +435,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down gracefully...');
   logger.info('SIGINT received, shutting down gracefully');
+  if (escalationInterval) clearInterval(escalationInterval);
   mqttService.disconnect();
   dbPool.end();
   process.exit(0);

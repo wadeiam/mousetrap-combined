@@ -277,16 +277,20 @@ export async function setMQTTConfig(config) {
   });
 }
 
-export async function getVideoMode() {
-  // Returns { mode: 'SVGA' }
-  return apiFetch('/api/video-mode');
+// ============================================================================
+// Camera Settings
+// ============================================================================
+
+export async function getCameraSettings() {
+  // Returns { videoMode, framesize, quality, brightness, contrast, saturation, vflip, hmirror }
+  return apiFetch('/api/camera-settings');
 }
 
-export async function setVideoMode(config) {
-  // config: { mode: 'SVGA' | 'VGA' | 'CIF' }
-  return apiFetch('/api/video-mode', {
+export async function setCameraSettings(settings) {
+  // settings: { videoMode?, framesize?, quality?, brightness?, contrast?, saturation?, vflip?, hmirror? }
+  return apiFetch('/api/camera-settings', {
     method: 'POST',
-    body: JSON.stringify(config),
+    body: JSON.stringify(settings),
   });
 }
 
@@ -317,6 +321,20 @@ export async function getOlderLogs() {
   // Returns older system logs as JSON array (2 boots ago)
   // Useful for troubleshooting multi-reboot flows like registration
   return apiFetch('/api/older-logs');
+}
+
+export async function getAccessLogs() {
+  // Returns access logs as JSON array
+  return apiFetch('/api/access-logs');
+}
+
+// ============================================================================
+// System Status
+// ============================================================================
+
+export async function getSystemStatus() {
+  // Returns system status info (heap, psram, fs, uptime, etc.)
+  return apiFetch('/api/system-status');
 }
 
 export async function getLogsJson() {
@@ -393,6 +411,23 @@ export async function resetAlarm() {
 export async function getClaimStatus() {
   // Returns { claimed: boolean, deviceId?, deviceName?, tenantId?, mqttConnected?, macAddress?, message? }
   return apiFetch('/api/device/claim-status');
+}
+
+export async function claimDevice(claimCode) {
+  // Claims the device with the given claim code
+  // Returns { success: boolean, message?: string, error?: string }
+  return apiFetch('/api/device/claim', {
+    method: 'POST',
+    body: JSON.stringify({ claimCode }),
+  });
+}
+
+export async function unclaimDevice() {
+  // Unclaims the device (clears credentials)
+  // Returns { success: boolean, message?: string, error?: string }
+  return apiFetch('/api/device/unclaim', {
+    method: 'POST',
+  });
 }
 
 // ============================================================================

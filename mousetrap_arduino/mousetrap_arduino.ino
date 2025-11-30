@@ -425,6 +425,7 @@ static String pendingSetupEmail = "";
 static String pendingSetupAccountPassword = "";
 static String pendingSetupDeviceName = "";
 static bool pendingSetupIsNewAccount = true;  // true = create account, false = sign in
+static String pendingSetupTimezone = "";      // IANA timezone (e.g., "America/Los_Angeles")
 
 // Last setup attempt result (persisted to NVS for display after reboot)
 typedef struct {
@@ -433,6 +434,78 @@ typedef struct {
   String errorCode;    // Error code (e.g., "invalid_credentials", "wifi_failed")
   String errorMessage; // Human-readable error message
 } SetupResult;
+
+// ============================================================================
+// ALERT ESCALATION SYSTEM
+// ============================================================================
+// 5-level escalation based on mouse welfare timelines (12-24h survival window)
+// Device operates autonomously and syncs with server when connected
+
+// Alert escalation levels
+enum AlertLevel {
+  ALERT_LEVEL_NONE = 0,  // No active alert
+  ALERT_LEVEL_1 = 1,     // 0-1 hour: Normal - LED solid red, no buzzer
+  ALERT_LEVEL_2 = 2,     // 1-2 hours: Elevated - LED slow blink, 1 beep/min
+  ALERT_LEVEL_3 = 3,     // 2-4 hours: High - LED fast blink, 3 beeps/min
+  ALERT_LEVEL_4 = 4,     // 4-8 hours: Critical - LED rapid blink, continuous short beeps
+  ALERT_LEVEL_5 = 5      // 8+ hours: Emergency - LED solid + rapid flash, continuous tone
+};
+
+// Alert state structure (persisted to NVS for power loss recovery)
+struct AlertEscalationState {
+  bool isTriggered;               // Is an alert currently active?
+  uint32_t triggeredAtEpoch;      // Unix timestamp when alert was triggered
+  AlertLevel currentLevel;        // Current escalation level
+  bool serverAcknowledged;        // Has the server acknowledged this alert?
+  uint32_t lastBuzzerTime;        // Last time buzzer sounded (millis)
+  uint32_t lastLevelCheck;        // Last time we checked/updated level (millis)
+};
+
+// Escalation timing presets (in minutes) - matches server presets
+struct EscalationPreset {
+  uint16_t level2;  // Minutes until Level 2
+  uint16_t level3;  // Minutes until Level 3
+  uint16_t level4;  // Minutes until Level 4
+  uint16_t level5;  // Minutes until Level 5
+};
+
+// Default preset timing (Normal preset from server)
+static const EscalationPreset PRESET_NORMAL = { 60, 120, 240, 480 };    // 1h, 2h, 4h, 8h
+static const EscalationPreset PRESET_RELAXED = { 120, 240, 480, 720 };  // 2h, 4h, 8h, 12h
+static const EscalationPreset PRESET_AGGRESSIVE = { 30, 60, 120, 240 }; // 30m, 1h, 2h, 4h
+
+// Current escalation state and settings
+static AlertEscalationState alertEscalation = {
+  false,           // isTriggered
+  0,               // triggeredAtEpoch
+  ALERT_LEVEL_NONE, // currentLevel
+  false,           // serverAcknowledged
+  0,               // lastBuzzerTime
+  0                // lastLevelCheck
+};
+
+// Active escalation preset (can be updated from server)
+static EscalationPreset activePreset = PRESET_NORMAL;
+
+// Preferences namespace for alert state persistence
+Preferences alertPrefs;
+
+// Forward declarations for escalation functions
+void saveAlertStateToNVS();
+void loadAlertStateFromNVS();
+void clearAlertStateFromNVS();
+void updateAlertEscalation();
+AlertLevel calculateAlertLevel(uint32_t elapsedMinutes);
+void updateBuzzerForLevel(AlertLevel level);
+void updateLEDForLevel(AlertLevel level);
+void handleEscalationCommand(JsonDocument& doc);
+void handleAlertClearCommand(JsonDocument& doc);
+void handleTestTriggerCommand();
+void syncAlertStateWithServer();
+
+// ============================================================================
+// END ALERT ESCALATION SYSTEM DECLARATIONS
+// ============================================================================
 
 // Forward declarations
 void saveSetupResult(bool success, const String& errorCode, const String& errorMessage);
@@ -2535,28 +2608,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         addSystemLog("[MQTT] Cleared version preferences, rebooting...");
         delay(1000);
         ESP.restart();
-      } else if (strcmp(cmd, "alert_reset") == 0) {
-        // Clear alert state (same as physical button press)
-        detectionState = false;
-        lastAlertTime = 0;
-        lastEmailTime = time(nullptr) - 3600;
-        Serial.println("[MQTT] Alert cleared via server command");
-        addSystemLog("[MQTT] Alert cleared via server command");
-
-        // Publish confirmation back to server
-        char topic[256];
-        snprintf(topic, sizeof(topic), "tenant/%s/device/%s/alert_cleared",
-                 claimedTenantId.c_str(), claimedMqttClientId.c_str());
-
-        JsonDocument alertDoc;
-        alertDoc["status"] = "cleared";
-        alertDoc["timestamp"] = time(nullptr);
-
-        String alertPayload;
-        serializeJson(alertDoc, alertPayload);
-
-        mqttClient.publish(topic, alertPayload.c_str());
-        Serial.println("[MQTT] Published alert_cleared confirmation");
+      } else if (strcmp(cmd, "alert_reset") == 0 || strcmp(cmd, "alert_clear") == 0) {
+        // Clear alert state using new escalation system
+        handleAlertClearCommand(doc);
+      } else if (strcmp(cmd, "test_trigger") == 0) {
+        // Test trigger from server - start escalation without taking photos
+        handleTestTriggerCommand();
+      } else if (strcmp(cmd, "escalation") == 0) {
+        // Update escalation settings (preset, timing, force level)
+        handleEscalationCommand(doc);
       } else if (strcmp(cmd, "capture_snapshot") == 0) {
         // Capture and send snapshot without triggering alarm
         Serial.println("[MQTT] Snapshot capture requested via server command");
@@ -2899,6 +2959,9 @@ bool mqttConnect() {
 
   // Publish online status
   publishDeviceStatus();
+
+  // Sync alert escalation state with server (in case alert was active during disconnect)
+  syncAlertStateWithServer();
 
   return true;
 }
@@ -6995,9 +7058,418 @@ void alertFunction() {
 
   /*  ----------  clean-up  ----------  */
   // esp_camera_fb_return(fb);
+
+  /*  ----------  Start escalation tracking  ----------  */
+  // Initialize escalation state when alert is triggered
+  if (!alertEscalation.isTriggered) {
+    alertEscalation.isTriggered = true;
+    alertEscalation.triggeredAtEpoch = now;
+    alertEscalation.currentLevel = ALERT_LEVEL_1;
+    alertEscalation.serverAcknowledged = false;
+    alertEscalation.lastBuzzerTime = millis();
+    alertEscalation.lastLevelCheck = millis();
+    saveAlertStateToNVS();
+    Serial.println("[ESCALATION] Alert triggered, starting at Level 1");
+    addSystemLog("[ESCALATION] Alert triggered, Level 1");
+  }
 }
 
+// ============================================================================
+// ALERT ESCALATION SYSTEM IMPLEMENTATION
+// ============================================================================
 
+// Save alert state to NVS for power loss recovery
+void saveAlertStateToNVS() {
+  alertPrefs.begin("alertState", false);
+  alertPrefs.putBool("triggered", alertEscalation.isTriggered);
+  alertPrefs.putUInt("triggerAt", alertEscalation.triggeredAtEpoch);
+  alertPrefs.putUChar("level", (uint8_t)alertEscalation.currentLevel);
+  alertPrefs.putBool("serverAck", alertEscalation.serverAcknowledged);
+  alertPrefs.end();
+  Serial.println("[ESCALATION] Alert state saved to NVS");
+}
+
+// Load alert state from NVS after power loss
+void loadAlertStateFromNVS() {
+  alertPrefs.begin("alertState", true);  // Read-only
+  alertEscalation.isTriggered = alertPrefs.getBool("triggered", false);
+  alertEscalation.triggeredAtEpoch = alertPrefs.getUInt("triggerAt", 0);
+  alertEscalation.currentLevel = (AlertLevel)alertPrefs.getUChar("level", 0);
+  alertEscalation.serverAcknowledged = alertPrefs.getBool("serverAck", false);
+  alertPrefs.end();
+
+  if (alertEscalation.isTriggered) {
+    alertEscalation.lastBuzzerTime = millis();
+    alertEscalation.lastLevelCheck = millis();
+    Serial.println("[ESCALATION] ========================================");
+    Serial.println("[ESCALATION] RESTORED ALERT STATE FROM NVS");
+    Serial.printf("[ESCALATION] Triggered at: %u\n", alertEscalation.triggeredAtEpoch);
+    Serial.printf("[ESCALATION] Current level: %d\n", alertEscalation.currentLevel);
+    Serial.println("[ESCALATION] ========================================");
+    addSystemLog("[ESCALATION] Alert state restored from NVS, Level " + String(alertEscalation.currentLevel));
+
+    // Recalculate level based on current time
+    updateAlertEscalation();
+  }
+}
+
+// Clear alert state from NVS
+void clearAlertStateFromNVS() {
+  alertPrefs.begin("alertState", false);
+  alertPrefs.clear();
+  alertPrefs.end();
+  Serial.println("[ESCALATION] Alert state cleared from NVS");
+}
+
+// Calculate alert level based on elapsed minutes
+AlertLevel calculateAlertLevel(uint32_t elapsedMinutes) {
+  if (elapsedMinutes >= activePreset.level5) return ALERT_LEVEL_5;
+  if (elapsedMinutes >= activePreset.level4) return ALERT_LEVEL_4;
+  if (elapsedMinutes >= activePreset.level3) return ALERT_LEVEL_3;
+  if (elapsedMinutes >= activePreset.level2) return ALERT_LEVEL_2;
+  return ALERT_LEVEL_1;
+}
+
+// Update buzzer output based on escalation level
+// NOTE: Frequencies chosen to be MOUSE-FRIENDLY (200-500Hz range)
+// Mice have very poor hearing below 1kHz, so these tones are:
+// - Clearly audible to humans (peak sensitivity 1-4kHz, but good at 200-500Hz)
+// - Minimally stressful to trapped mice (hearing threshold ~24dB at 1kHz, worse below)
+// Source: https://pmc.ncbi.nlm.nih.gov/articles/PMC2949429/
+void updateBuzzerForLevel(AlertLevel level) {
+  unsigned long now = millis();
+  unsigned long timeSinceLastBuzz = now - alertEscalation.lastBuzzerTime;
+
+  switch (level) {
+    case ALERT_LEVEL_NONE:
+    case ALERT_LEVEL_1:
+      // Level 1: No buzzer
+      noTone(BUZZER_PIN);
+      break;
+
+    case ALERT_LEVEL_2:
+      // Level 2: 1 beep per minute (every 60 seconds)
+      // 300Hz - low, gentle reminder; below mouse hearing sensitivity
+      if (timeSinceLastBuzz >= 60000) {
+        tone(BUZZER_PIN, 300);
+        TASK_YIELD_MS(300);
+        noTone(BUZZER_PIN);
+        alertEscalation.lastBuzzerTime = now;
+      }
+      break;
+
+    case ALERT_LEVEL_3:
+      // Level 3: 3 beeps per minute (every 20 seconds)
+      // 400Hz - slightly more urgent, still mouse-friendly
+      if (timeSinceLastBuzz >= 20000) {
+        for (int i = 0; i < 2; i++) {
+          tone(BUZZER_PIN, 400);
+          TASK_YIELD_MS(200);
+          noTone(BUZZER_PIN);
+          TASK_YIELD_MS(150);
+        }
+        alertEscalation.lastBuzzerTime = now;
+      }
+      break;
+
+    case ALERT_LEVEL_4:
+      // Level 4: Continuous short beeps (every 2 seconds)
+      // 500Hz - persistent but still in mouse-friendly range
+      if (timeSinceLastBuzz >= 2000) {
+        tone(BUZZER_PIN, 500);
+        TASK_YIELD_MS(150);
+        noTone(BUZZER_PIN);
+        alertEscalation.lastBuzzerTime = now;
+      }
+      break;
+
+    case ALERT_LEVEL_5:
+      // Level 5: Continuous warbling tone in low frequency range
+      // 350-450Hz alternating - urgent for humans, minimal stress for mouse
+      if (timeSinceLastBuzz >= 500) {
+        static bool highTone = false;
+        tone(BUZZER_PIN, highTone ? 450 : 350);
+        highTone = !highTone;
+        alertEscalation.lastBuzzerTime = now;
+      }
+      break;
+  }
+}
+
+// Update LED output based on escalation level
+// Called from sensor task loop, manages LED blinking patterns
+void updateLEDForLevel(AlertLevel level) {
+  static unsigned long lastLedToggle = 0;
+  static bool ledOn = false;
+  unsigned long now = millis();
+
+  switch (level) {
+    case ALERT_LEVEL_NONE:
+      // No alert: LED off
+      digitalWrite(LED_PIN, LOW);
+      break;
+
+    case ALERT_LEVEL_1:
+      // Level 1: Solid red
+      digitalWrite(LED_PIN, HIGH);
+      break;
+
+    case ALERT_LEVEL_2:
+      // Level 2: Slow blink (1 Hz - 500ms on/off)
+      if (now - lastLedToggle >= 500) {
+        ledOn = !ledOn;
+        digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+        lastLedToggle = now;
+      }
+      break;
+
+    case ALERT_LEVEL_3:
+      // Level 3: Fast blink (2 Hz - 250ms on/off)
+      if (now - lastLedToggle >= 250) {
+        ledOn = !ledOn;
+        digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+        lastLedToggle = now;
+      }
+      break;
+
+    case ALERT_LEVEL_4:
+      // Level 4: Rapid blink (4 Hz - 125ms on/off)
+      if (now - lastLedToggle >= 125) {
+        ledOn = !ledOn;
+        digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+        lastLedToggle = now;
+      }
+      break;
+
+    case ALERT_LEVEL_5:
+      // Level 5: Solid with rapid flash bursts
+      // Mostly on with quick off pulses
+      if (now - lastLedToggle >= 100) {
+        static int flashCount = 0;
+        if (flashCount < 3) {
+          ledOn = !ledOn;
+          flashCount++;
+        } else if (flashCount < 13) {
+          ledOn = true;  // Stay on for 10 cycles
+          flashCount++;
+        } else {
+          flashCount = 0;
+        }
+        digitalWrite(LED_PIN, ledOn ? HIGH : LOW);
+        lastLedToggle = now;
+      }
+      break;
+  }
+}
+
+// Main escalation update function - call from loop()
+void updateAlertEscalation() {
+  if (!alertEscalation.isTriggered) return;
+
+  // Check level every second
+  if (millis() - alertEscalation.lastLevelCheck < 1000) return;
+  alertEscalation.lastLevelCheck = millis();
+
+  // Calculate elapsed time
+  time_t now = time(nullptr);
+  if (now < alertEscalation.triggeredAtEpoch) return;  // Time not synced yet
+
+  uint32_t elapsedSeconds = now - alertEscalation.triggeredAtEpoch;
+  uint32_t elapsedMinutes = elapsedSeconds / 60;
+
+  // Calculate new level
+  AlertLevel newLevel = calculateAlertLevel(elapsedMinutes);
+
+  // Check for level change
+  if (newLevel != alertEscalation.currentLevel) {
+    AlertLevel oldLevel = alertEscalation.currentLevel;
+    alertEscalation.currentLevel = newLevel;
+    saveAlertStateToNVS();
+
+    Serial.printf("[ESCALATION] Level changed: %d -> %d (elapsed: %d min)\n",
+                  oldLevel, newLevel, elapsedMinutes);
+    addSystemLog("[ESCALATION] Level " + String(oldLevel) + " -> " + String(newLevel));
+
+    // Notify server of level change via MQTT
+    if (mqttClient.connected()) {
+      String topic = "tenant/" + claimedTenantId + "/device/" + claimedMqttClientId + "/escalation_update";
+      JsonDocument doc;
+      doc["oldLevel"] = oldLevel;
+      doc["newLevel"] = newLevel;
+      doc["elapsedMinutes"] = elapsedMinutes;
+      doc["triggeredAt"] = alertEscalation.triggeredAtEpoch;
+      doc["timestamp"] = now;
+
+      String payload;
+      serializeJson(doc, payload);
+      mqttClient.publish(topic.c_str(), payload.c_str());
+      Serial.println("[ESCALATION] Published level change to MQTT");
+    }
+  }
+
+  // Update buzzer and LED based on current level
+  updateBuzzerForLevel(alertEscalation.currentLevel);
+  updateLEDForLevel(alertEscalation.currentLevel);
+}
+
+// Handle escalation command from server (update preset timing)
+void handleEscalationCommand(JsonDocument& doc) {
+  Serial.println("[ESCALATION] Received escalation command from server");
+
+  const char* preset = doc["preset"];
+  if (preset) {
+    if (strcmp(preset, "relaxed") == 0) {
+      activePreset = PRESET_RELAXED;
+      Serial.println("[ESCALATION] Preset changed to RELAXED");
+    } else if (strcmp(preset, "normal") == 0) {
+      activePreset = PRESET_NORMAL;
+      Serial.println("[ESCALATION] Preset changed to NORMAL");
+    } else if (strcmp(preset, "aggressive") == 0) {
+      activePreset = PRESET_AGGRESSIVE;
+      Serial.println("[ESCALATION] Preset changed to AGGRESSIVE");
+    } else if (strcmp(preset, "custom") == 0) {
+      // Custom timing from server
+      if (doc.containsKey("timing")) {
+        activePreset.level2 = doc["timing"]["level2"] | 60;
+        activePreset.level3 = doc["timing"]["level3"] | 120;
+        activePreset.level4 = doc["timing"]["level4"] | 240;
+        activePreset.level5 = doc["timing"]["level5"] | 480;
+        Serial.printf("[ESCALATION] Custom timing: L2=%d, L3=%d, L4=%d, L5=%d\n",
+                      activePreset.level2, activePreset.level3,
+                      activePreset.level4, activePreset.level5);
+      }
+    }
+    addSystemLog("[ESCALATION] Preset updated: " + String(preset));
+
+    // Recalculate current level with new timing
+    if (alertEscalation.isTriggered) {
+      updateAlertEscalation();
+    }
+  }
+
+  // Server can also force a specific level (for testing)
+  if (doc.containsKey("forceLevel")) {
+    int level = doc["forceLevel"];
+    if (level >= 0 && level <= 5) {
+      alertEscalation.currentLevel = (AlertLevel)level;
+      Serial.printf("[ESCALATION] Level forced to %d by server\n", level);
+      addSystemLog("[ESCALATION] Level forced to " + String(level));
+    }
+  }
+}
+
+// Handle alert_clear command from server
+void handleAlertClearCommand(JsonDocument& doc) {
+  Serial.println("[ESCALATION] ========================================");
+  Serial.println("[ESCALATION] ALERT CLEAR COMMAND FROM SERVER");
+  Serial.println("[ESCALATION] ========================================");
+
+  const char* reason = doc["reason"];
+  const char* alertId = doc["alertId"];
+
+  Serial.printf("[ESCALATION] Alert ID: %s\n", alertId ? alertId : "none");
+  Serial.printf("[ESCALATION] Reason: %s\n", reason ? reason : "none");
+
+  // Clear the alert state
+  alertEscalation.isTriggered = false;
+  alertEscalation.triggeredAtEpoch = 0;
+  alertEscalation.currentLevel = ALERT_LEVEL_NONE;
+  alertEscalation.serverAcknowledged = true;
+
+  // Clear from NVS
+  clearAlertStateFromNVS();
+
+  // Stop buzzer and LED
+  noTone(BUZZER_PIN);
+  digitalWrite(LED_PIN, LOW);
+
+  // Also clear the legacy detectionState
+  detectionState = false;
+  lastAlertTime = 0;
+
+  Serial.println("[ESCALATION] Alert cleared successfully");
+  addSystemLog("[ESCALATION] Alert cleared by server: " + String(reason ? reason : "acknowledged"));
+
+  // Publish confirmation back to server
+  if (mqttClient.connected()) {
+    String topic = "tenant/" + claimedTenantId + "/device/" + claimedMqttClientId + "/alert_cleared";
+    JsonDocument confirmDoc;
+    confirmDoc["status"] = "cleared";
+    confirmDoc["alertId"] = alertId ? alertId : "";
+    confirmDoc["reason"] = reason ? reason : "server_command";
+    confirmDoc["timestamp"] = time(nullptr);
+
+    String payload;
+    serializeJson(confirmDoc, payload);
+    mqttClient.publish(topic.c_str(), payload.c_str());
+    Serial.println("[ESCALATION] Published clear confirmation to MQTT");
+  }
+}
+
+// Handle test trigger command from server - triggers alert without taking photos
+void handleTestTriggerCommand() {
+  Serial.println("[ESCALATION] ========================================");
+  Serial.println("[ESCALATION] TEST TRIGGER COMMAND FROM SERVER");
+  Serial.println("[ESCALATION] ========================================");
+
+  const time_t now = time(nullptr);
+
+  // Initialize escalation state as if trap was triggered
+  if (!alertEscalation.isTriggered) {
+    alertEscalation.isTriggered = true;
+    alertEscalation.triggeredAtEpoch = now;
+    alertEscalation.currentLevel = ALERT_LEVEL_1;
+    alertEscalation.serverAcknowledged = false;
+    alertEscalation.lastBuzzerTime = millis();
+    alertEscalation.lastLevelCheck = millis();
+    saveAlertStateToNVS();
+
+    // Also set legacy detection state for SPA display
+    detectionState = true;
+
+    Serial.println("[ESCALATION] Test trigger started at Level 1");
+    addSystemLog("[ESCALATION] Test trigger from server, Level 1");
+
+    // Immediately update buzzer and LED for Level 1
+    updateBuzzerForLevel(ALERT_LEVEL_1);
+    updateLEDForLevel(ALERT_LEVEL_1);
+  } else {
+    Serial.println("[ESCALATION] Already triggered, ignoring test trigger");
+    addSystemLog("[ESCALATION] Test trigger ignored - already triggered");
+  }
+}
+
+// Sync alert state with server on MQTT reconnect
+void syncAlertStateWithServer() {
+  if (!mqttClient.connected()) return;
+  if (!alertEscalation.isTriggered) return;
+
+  Serial.println("[ESCALATION] Syncing alert state with server");
+
+  String topic = "tenant/" + claimedTenantId + "/device/" + claimedMqttClientId + "/alert_sync";
+  JsonDocument doc;
+  doc["isTriggered"] = alertEscalation.isTriggered;
+  doc["triggeredAt"] = alertEscalation.triggeredAtEpoch;
+  doc["currentLevel"] = alertEscalation.currentLevel;
+  doc["serverAcknowledged"] = alertEscalation.serverAcknowledged;
+
+  time_t now = time(nullptr);
+  if (now > alertEscalation.triggeredAtEpoch) {
+    doc["elapsedMinutes"] = (now - alertEscalation.triggeredAtEpoch) / 60;
+  }
+  doc["timestamp"] = now;
+
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(topic.c_str(), payload.c_str());
+
+  Serial.println("[ESCALATION] Alert state sync published");
+  addSystemLog("[ESCALATION] Synced with server");
+}
+
+// ============================================================================
+// END ALERT ESCALATION SYSTEM IMPLEMENTATION
+// ============================================================================
 
 
 
@@ -8799,10 +9271,171 @@ void setupEndpoints() {
   server.on("/testAlert", HTTP_GET, protectHandler(handleTestAlert));
   server.on("/options", HTTP_GET, protectHandler(handleOptions));
   server.on("/setOptions", HTTP_GET, protectHandler(handleSetOptions));
+
+  // Camera settings API (for Svelte app)
+  server.on("/api/camera-settings", HTTP_GET, protectHandler([](AsyncWebServerRequest *req) {
+    sensor_t *s = esp_camera_sensor_get();
+    JsonDocument doc;
+
+    doc["videoMode"] = videoMode;
+    doc["framesize"] = s ? s->status.framesize : 0;
+    doc["quality"] = s ? s->status.quality : 12;
+    doc["brightness"] = s ? s->status.brightness : 0;
+    doc["contrast"] = s ? s->status.contrast : 0;
+    doc["saturation"] = s ? s->status.saturation : 0;
+    doc["vflip"] = s ? s->status.vflip : 0;
+    doc["hmirror"] = s ? s->status.hmirror : 0;
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  }));
+
+  server.on("/api/camera-settings", HTTP_POST, [](AsyncWebServerRequest *req){}, NULL,
+    [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!isAllowed(req)) {
+        req->send(403);
+        return;
+      }
+
+      JsonDocument doc;
+      DeserializationError err = deserializeJson(doc, data, len);
+      if (err) {
+        req->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+      }
+
+      sensor_t *s = esp_camera_sensor_get();
+      if (!s) {
+        req->send(500, "application/json", "{\"error\":\"Camera not initialized\"}");
+        return;
+      }
+
+      bool changed = false;
+
+      if (doc.containsKey("videoMode")) {
+        videoMode = doc["videoMode"].as<bool>();
+        changed = true;
+      }
+      if (doc.containsKey("framesize")) {
+        int fs = doc["framesize"].as<int>();
+        if (fs >= 0 && fs <= 13) {
+          s->set_framesize(s, (framesize_t)fs);
+          changed = true;
+        }
+      }
+      if (doc.containsKey("quality")) {
+        int q = doc["quality"].as<int>();
+        if (q >= 4 && q <= 63) {
+          s->set_quality(s, q);
+          changed = true;
+        }
+      }
+      if (doc.containsKey("brightness")) {
+        int b = doc["brightness"].as<int>();
+        if (b >= -2 && b <= 2) {
+          s->set_brightness(s, b);
+          changed = true;
+        }
+      }
+      if (doc.containsKey("contrast")) {
+        int c = doc["contrast"].as<int>();
+        if (c >= -2 && c <= 2) {
+          s->set_contrast(s, c);
+          changed = true;
+        }
+      }
+      if (doc.containsKey("saturation")) {
+        int sat = doc["saturation"].as<int>();
+        if (sat >= -2 && sat <= 2) {
+          s->set_saturation(s, sat);
+          changed = true;
+        }
+      }
+      if (doc.containsKey("vflip")) {
+        s->set_vflip(s, doc["vflip"].as<bool>() ? 1 : 0);
+        changed = true;
+      }
+      if (doc.containsKey("hmirror")) {
+        s->set_hmirror(s, doc["hmirror"].as<bool>() ? 1 : 0);
+        changed = true;
+      }
+
+      // Only save to NVS if persist flag is true
+      bool persist = doc.containsKey("persist") ? doc["persist"].as<bool>() : false;
+
+      if (changed && persist) {
+        saveSettings();
+        addSystemLog("Camera settings saved via API");
+      }
+
+      req->send(200, "application/json", "{\"success\":true}");
+    });
+
   server.on("/replay", HTTP_GET, protectHandler(handleReplay));
 
-
   server.on("/previousLogs", HTTP_GET, protectHandler(handlePreviousLogs));
+
+  // Access logs API (for Svelte app)
+  server.on("/api/access-logs", HTTP_GET, protectHandler([](AsyncWebServerRequest *req) {
+    JsonDocument doc;
+    JsonArray logsArray = doc.to<JsonArray>();
+
+    for (int i = 0; i < accessLogCount; i++) {
+      logsArray.add(accessLogs[i]);
+    }
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json; charset=utf-8", json);
+  }));
+
+  // System status API (for Svelte app)
+  server.on("/api/system-status", HTTP_GET, protectHandler([](AsyncWebServerRequest *req) {
+    JsonDocument doc;
+
+    // Memory stats
+    doc["heapFree"] = ESP.getFreeHeap();
+    doc["heapTotal"] = ESP.getHeapSize();
+    doc["psramFree"] = psramFound() ? ESP.getFreePsram() : 0;
+    doc["psramTotal"] = psramFound() ? ESP.getPsramSize() : 0;
+
+    // Filesystem stats
+    doc["fsFree"] = LittleFS.totalBytes() - LittleFS.usedBytes();
+    doc["fsTotal"] = LittleFS.totalBytes();
+    doc["fsUsed"] = LittleFS.usedBytes();
+
+    // System info
+    doc["cpuFreq"] = ESP.getCpuFreqMHz();
+    doc["uptimeSeconds"] = millis() / 1000;
+    doc["firmwareVersion"] = currentFirmwareVersion;
+    doc["filesystemVersion"] = currentFilesystemVersion;
+    doc["macAddress"] = WiFi.macAddress();
+    doc["ipAddress"] = WiFi.localIP().toString();
+    doc["rssi"] = WiFi.RSSI();
+
+    // Servo positions
+    doc["servoStart"] = servoStartUS;
+    doc["servoEnd"] = servoEndUS;
+
+    // Capture files
+    JsonArray captures = doc.createNestedArray("captures");
+    File dir = LittleFS.open(CAPTURE_DIR, "r");
+    if (dir) {
+      while (File f = dir.openNextFile()) {
+        if (!f.isDirectory()) {
+          JsonObject capture = captures.createNestedObject();
+          capture["name"] = String(f.name());
+          capture["size"] = f.size();
+        }
+      }
+      dir.close();
+    }
+
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json; charset=utf-8", json);
+  }));
 
   // JSON API endpoints for logs (for Svelte app)
   server.on("/api/system-logs", HTTP_GET, protectHandler([](AsyncWebServerRequest *req) {
@@ -9377,10 +10010,12 @@ void setupEndpoints() {
         String accountPassword = doc["accountPassword"] | "";
         String deviceName = doc["deviceName"] | "";
         bool isNewAccount = doc["isNewAccount"] | true;
+        String timezone = doc["timezone"] | "UTC";
 
         addSystemLog("[SETUP-REG] Email: " + email);
         addSystemLog("[SETUP-REG] Device: " + deviceName);
         addSystemLog("[SETUP-REG] NewAccount: " + String(isNewAccount ? "true" : "false"));
+        addSystemLog("[SETUP-REG] Timezone: " + timezone);
 
         if (email.isEmpty() || accountPassword.isEmpty() || deviceName.isEmpty()) {
           addSystemLog("[SETUP-REG] ERROR: Missing required fields");
@@ -9394,6 +10029,7 @@ void setupEndpoints() {
         pendingSetupAccountPassword = accountPassword;
         pendingSetupDeviceName = deviceName;
         pendingSetupIsNewAccount = isNewAccount;
+        pendingSetupTimezone = timezone;
         pendingRegistrationTime = millis();
         pendingRegistration = true;
 
@@ -9439,11 +10075,13 @@ void setupEndpoints() {
         String accountPassword = doc["accountPassword"] | "";
         String deviceName = doc["deviceName"] | "";
         bool isNewAccount = doc["isNewAccount"] | true;  // Default to create account
+        String timezone = doc["timezone"] | "UTC";
 
         addSystemLog("[SETUP-CONNECT] SSID: " + ssid);
         addSystemLog("[SETUP-CONNECT] Email: " + email);
         addSystemLog("[SETUP-CONNECT] Device: " + deviceName);
         addSystemLog("[SETUP-CONNECT] NewAccount: " + String(isNewAccount ? "true" : "false"));
+        addSystemLog("[SETUP-CONNECT] Timezone: " + timezone);
 
         if (ssid.isEmpty() || email.isEmpty() || accountPassword.isEmpty() || deviceName.isEmpty()) {
           addSystemLog("[SETUP-CONNECT] ERROR: Missing required fields");
@@ -9459,6 +10097,7 @@ void setupEndpoints() {
         pendingSetupAccountPassword = accountPassword;
         pendingSetupDeviceName = deviceName;
         pendingSetupIsNewAccount = isNewAccount;
+        pendingSetupTimezone = timezone;
         pendingSetupTime = millis();
         pendingSetup = true;
 
@@ -11236,10 +11875,36 @@ void setup() {
       addSystemLog("[STARTUP-CLAIM] Could not verify claim status - network issue, STAYING CLAIMED");
     }
   } else {
-    Serial.println("[STARTUP-CLAIM] Device is unclaimed - skipping server verification");
+    Serial.println("[STARTUP-CLAIM] Device is unclaimed locally");
+    // If WiFi is connected (not in AP mode), try to recover claim from server
+    // The server may still have a record of this device from before
+    if (!isAPMode && WiFi.status() == WL_CONNECTED) {
+      Serial.println("[STARTUP-CLAIM] ========================================");
+      Serial.println("[STARTUP-CLAIM] ATTEMPTING AUTO-RECOVERY FROM SERVER");
+      Serial.println("[STARTUP-CLAIM] ========================================");
+      Serial.println("[STARTUP-CLAIM] WiFi is connected - checking if server knows this device");
+      addSystemLog("[STARTUP-CLAIM] Attempting auto-recovery from server...");
+
+      // Wait a moment for network to stabilize
+      delay(2000);
+
+      if (tryRecoverClaim()) {
+        Serial.println("[STARTUP-CLAIM] ========================================");
+        Serial.println("[STARTUP-CLAIM] SUCCESS - CLAIM RECOVERED FROM SERVER");
+        Serial.println("[STARTUP-CLAIM] ========================================");
+        Serial.printf("[STARTUP-CLAIM] Device Name: %s\n", claimedDeviceName.c_str());
+        Serial.printf("[STARTUP-CLAIM] Tenant ID: %s\n", claimedTenantId.c_str());
+        addSystemLog("[STARTUP-CLAIM] Claim auto-recovered: " + claimedDeviceName);
+      } else {
+        Serial.println("[STARTUP-CLAIM] Device not found on server - needs manual registration");
+        addSystemLog("[STARTUP-CLAIM] Not found on server - needs registration");
+      }
+    } else {
+      Serial.println("[STARTUP-CLAIM] WiFi not connected - skipping auto-recovery");
+    }
   }
 
-  // Initialize MQTT (only if still claimed after verification)
+  // Initialize MQTT (only if claimed after verification/recovery)
   mqttSetup();
 
   loadSettings();
@@ -11276,6 +11941,9 @@ void setup() {
   lastEmailTime = time(nullptr) - 3600;
 
   notifyBootIP();
+
+  // Load alert escalation state from NVS (power loss recovery)
+  loadAlertStateFromNVS();
 
   //dumpCaptures();
 
@@ -11600,46 +12268,12 @@ void clearSetupResult() {
 // ============================================================================
 // Try to recover claim from server (device may have lost NVS but server has record)
 // Returns true if claim was recovered and credentials saved to NVS
+// SIMPLIFIED: Server only requires MAC address - no token needed
 // ============================================================================
 bool tryRecoverClaim() {
-  // Sync NTP time first (needed for claim token)
-  addSystemLog("[RECOVER] Syncing NTP time for claim token...");
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-
-  const time_t MIN_VALID_TIME = 1577836800;  // Jan 1, 2020
-  int ntpAttempts = 0;
-  while (time(nullptr) < MIN_VALID_TIME && ntpAttempts < 10) {
-    delay(500);
-    ntpAttempts++;
-  }
-
-  if (time(nullptr) < MIN_VALID_TIME) {
-    addSystemLog("[RECOVER] NTP sync failed - cannot generate claim token");
-    return false;
-  }
-
-  // Generate claim token
-  time_t now = time(nullptr);
-  String timestamp = String(now);
   String mac = g_macUpper;  // XX:XX:XX:XX:XX:XX format
 
-  // HMAC-SHA256(MAC:timestamp, secret)
-  String data = mac + ":" + timestamp;
-  uint8_t hash[32];
-  mbedtls_md_context_t ctx;
-  mbedtls_md_init(&ctx);
-  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1);
-  mbedtls_md_hmac_starts(&ctx, (const unsigned char*)DEVICE_CLAIM_SECRET, strlen(DEVICE_CLAIM_SECRET));
-  mbedtls_md_hmac_update(&ctx, (const unsigned char*)data.c_str(), data.length());
-  mbedtls_md_hmac_finish(&ctx, hash);
-  mbedtls_md_free(&ctx);
-
-  String claimToken = "";
-  for (int i = 0; i < 32; i++) {
-    char hex[3];
-    sprintf(hex, "%02x", hash[i]);
-    claimToken += hex;
-  }
+  addSystemLog("[RECOVER] Attempting claim recovery for MAC: " + mac);
 
   // Call server recover-claim endpoint
   String serverUrl = String(CLAIM_SERVER_URL) + "/api/setup/recover-claim";
@@ -11650,10 +12284,9 @@ bool tryRecoverClaim() {
   http.addHeader("Content-Type", "application/json");
   http.setTimeout(10000);
 
+  // Server only requires MAC address now
   JsonDocument reqDoc;
   reqDoc["mac"] = mac;
-  reqDoc["claimToken"] = claimToken;
-  reqDoc["timestamp"] = timestamp;
 
   String reqBody;
   serializeJson(reqDoc, reqBody);
@@ -11920,6 +12553,7 @@ void processPendingRegistration() {
   reqDoc["claimToken"] = creds.token;
   reqDoc["timestamp"] = creds.timestamp;
   reqDoc["isNewAccount"] = pendingSetupIsNewAccount;
+  reqDoc["timezone"] = pendingSetupTimezone;
 
   String reqBody;
   serializeJson(reqDoc, reqBody);
@@ -12397,6 +13031,11 @@ void loop() {
     debugI2CCheckHealth();
     lastDebugUpdate = now;
   }
+  /* ─────────────────────────────────────────────────────────── */
+
+  /* ── Alert Escalation System Update ─────────────────────── */
+  // Process escalation state machine (level changes, buzzer/LED patterns)
+  updateAlertEscalation();
   /* ─────────────────────────────────────────────────────────── */
 
   /* ── Claiming mode button check, polling, and timeout ──────── */

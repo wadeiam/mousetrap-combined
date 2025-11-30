@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="1024" height="1024" fill="#0f4c75" rx="180"/>
+
+  <!-- MouseTrap Icon - Simplified trap design -->
+  <!-- Base/Platform -->
+  <rect x="200" y="600" width="624" height="80" fill="#f0f0f0" rx="10"/>
+
+  <!-- Trap mechanism - Spring coil (left side) -->
+  <g fill="none" stroke="#d0d0d0" stroke-width="12" stroke-linecap="round">
+    <path d="M 240 580 Q 240 520, 280 520"/>
+    <path d="M 280 520 Q 320 520, 320 460"/>
+    <path d="M 320 460 Q 320 400, 280 400"/>
+  </g>
+
+  <!-- Snap bar (the dangerous part) - Alert/Active state -->
+  <line x1="300" y1="400" x2="720" y2="400" stroke="#ff4444" stroke-width="20" stroke-linecap="round"/>
+  <circle cx="300" cy="400" r="15" fill="#ff4444"/>
+  <circle cx="720" cy="400" r="15" fill="#ff4444"/>
+
+  <!-- Trigger plate (center) -->
+  <rect x="400" y="550" width="224" height="50" fill="#ffd700" rx="5"/>
+
+  <!-- IoT Indicator - Small wifi/signal icon in corner -->
+  <g transform="translate(720, 240)">
+    <!-- Signal waves -->
+    <path d="M -40 40 Q -20 20, 0 0" fill="none" stroke="#4CAF50" stroke-width="12" stroke-linecap="round"/>
+    <path d="M -25 35 Q -12.5 22.5, 0 10" fill="none" stroke="#4CAF50" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="0" cy="20" r="8" fill="#4CAF50"/>
+  </g>
+
+  <!-- Mouse silhouette (simple, recognizable) -->
+  <g transform="translate(450, 280)">
+    <!-- Body -->
+    <ellipse cx="0" cy="0" rx="60" ry="40" fill="#888"/>
+    <!-- Head -->
+    <circle cx="-50" cy="-10" r="35" fill="#888"/>
+    <!-- Ear -->
+    <circle cx="-65" cy="-35" r="18" fill="#888"/>
+    <circle cx="-65" cy="-35" r="12" fill="#666"/>
+    <!-- Tail -->
+    <path d="M 60 10 Q 90 20, 100 -10" fill="none" stroke="#888" stroke-width="8" stroke-linecap="round"/>
+    <!-- Eye -->
+    <circle cx="-60" cy="-15" r="4" fill="#333"/>
+  </g>
+
+  <!-- Monitoring badge/indicator -->
+  <circle cx="820" cy="180" r="60" fill="#1a1a2e"/>
+  <circle cx="820" cy="180" r="50" fill="#0f4c75" stroke="#4CAF50" stroke-width="4"/>
+  <text x="820" y="200" font-family="Arial, sans-serif" font-size="50" font-weight="bold" fill="#4CAF50" text-anchor="middle">M</text>
+</svg>

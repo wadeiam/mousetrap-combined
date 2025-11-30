@@ -7,12 +7,14 @@
   import Gallery from './pages/Gallery.svelte';
   import Calibration from './pages/Calibration.svelte';
   import ServoSettings from './pages/ServoSettings.svelte';
-  import Settings from './pages/Settings.svelte';
   import Logs from './pages/Logs.svelte';
   import Firmware from './pages/Firmware.svelte';
   import TestAlert from './pages/TestAlert.svelte';
   import Setup from './pages/Setup.svelte';
   import WiFi from './pages/WiFi.svelte';
+  import Claim from './pages/Claim.svelte';
+  import CameraSettings from './pages/CameraSettings.svelte';
+  import SystemStatus from './pages/SystemStatus.svelte';
 
   // Route matching
   $: component = getComponent($currentRoute);
@@ -27,7 +29,6 @@
     if (route === '/gallery') return Gallery;
     if (route === '/calibration') return Calibration;
     if (route === '/servo') return ServoSettings;
-    if (route === '/settings') return Settings;
     if (route === '/logs') return Logs;
     if (route === '/status') return Logs; // Alias for logs
     if (route === '/firmware') return Firmware;
@@ -35,6 +36,9 @@
     if (route === '/test') return TestAlert;
     if (route === '/setup') return Setup;
     if (route === '/wifi') return WiFi;
+    if (route === '/claim') return Claim;
+    if (route === '/camera-settings') return CameraSettings;
+    if (route === '/system-status') return SystemStatus;
 
     // Default to Dashboard for unknown routes
     return Dashboard;
