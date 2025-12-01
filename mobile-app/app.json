@@ -29,7 +29,8 @@
         "backgroundColor": "#1a1a2e"
       },
       "package": "com.mousetrap.monitor",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
