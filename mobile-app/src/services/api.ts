@@ -3,9 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ApiResponse, User, Device, Alert, NotificationPreferences, EscalationPresetConfig, EmergencyContact, CreateEmergencyContact, EscalationPreset, CustomEscalation } from '../types';
 
 // Configure base URL - change this for production
-const API_BASE_URL = __DEV__
-  ? 'http://192.168.133.110:4000/api'  // Local dev server
-  : 'https://your-production-server.com/api';
+// For now, always use local server (update when deploying to production)
+const API_BASE_URL = 'http://192.168.133.110:4000/api';
 
 class ApiService {
   private client: AxiosInstance;

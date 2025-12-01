@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1047045288157",
+    "project_id": "mousetrapv1",
+    "storage_bucket": "mousetrapv1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1047045288157:android:ece914c377158f1005ab34",
+        "android_client_info": {
+          "package_name": "com.mousetrap.monitor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAD0dHJuC0KuqwNIKT-GgI6nBBfsPkVxOg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
