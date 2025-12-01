@@ -75,10 +75,18 @@ class ApiService {
 
       return { success: true, data: { token, user } };
     } catch (error: any) {
-      return {
-        success: false,
-        error: error.response?.data?.error || 'Login failed'
-      };
+      // Provide detailed error messages
+      let errorMsg = 'Login failed';
+      if (error.code === 'ECONNABORTED') {
+        errorMsg = 'Connection timeout - server unreachable';
+      } else if (error.code === 'ERR_NETWORK') {
+        errorMsg = 'Network error - check WiFi connection';
+      } else if (error.response?.data?.error) {
+        errorMsg = error.response.data.error;
+      } else if (error.message) {
+        errorMsg = error.message;
+      }
+      return { success: false, error: errorMsg };
     }
   }
 
