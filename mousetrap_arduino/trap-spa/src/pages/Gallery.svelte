@@ -152,9 +152,48 @@
     deleteTarget = null;
   }
 
-  function formatTimestamp(timestamp) {
-    const date = new Date(timestamp);
-    return date.toLocaleString();
+  function formatTimestamp(filename) {
+    // Parse date/time from filename format: img_YYYYMMDD_HHMM_a.jpg or similar
+    // Examples: img_20251201_0004_a.jpg (Dec 1, 2025 00:04), snapshot_1733038847.jpg
+    if (!filename) return 'Unknown Date';
+
+    // Try to extract YYYYMMDD_HHMM from filename (img_YYYYMMDD_HHMM_...)
+    // Format from firmware: strftime(ts, sizeof(ts), "%Y%m%d_%H%M", &tmNow)
+    const dateTimeMatch = filename.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/);
+    if (dateTimeMatch) {
+      const year = parseInt(dateTimeMatch[1]);
+      const month = parseInt(dateTimeMatch[2]) - 1; // JS months are 0-indexed
+      const day = parseInt(dateTimeMatch[3]);
+      const hour = parseInt(dateTimeMatch[4]);
+      const minute = parseInt(dateTimeMatch[5]);
+
+      // Validate the date/time parts are reasonable
+      if (year >= 2020 && year <= 2100 && month >= 0 && month <= 11 &&
+          day >= 1 && day <= 31 && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+        const date = new Date(year, month, day, hour, minute);
+        return 'Captured ' + date.toLocaleDateString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        }) + ' ' + date.toLocaleTimeString(undefined, {
+          hour: 'numeric',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+      }
+    }
+
+    // Fallback: try to parse unix timestamp from filename (snapshot_TIMESTAMP.jpg)
+    const unixMatch = filename.match(/(\d{10})/);
+    if (unixMatch) {
+      const timestamp = parseInt(unixMatch[1]) * 1000;
+      const date = new Date(timestamp);
+      if (!isNaN(date.getTime())) {
+        return 'Captured ' + date.toLocaleString();
+      }
+    }
+
+    return 'Unknown Date';
   }
 
   function formatFileSize(bytes) {
@@ -220,7 +259,7 @@
       <div class="modal-header">
         <div class="modal-title">
           <div class="modal-filename">{selectedImage.name}</div>
-          <div class="modal-timestamp">{formatTimestamp(selectedImage.timestamp)}</div>
+          <div class="modal-timestamp">{formatTimestamp(selectedImage.name)}</div>
         </div>
         <button class="modal-close" on:click={closeModal}>&times;</button>
       </div>

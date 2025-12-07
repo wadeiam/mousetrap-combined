@@ -1,7 +1,7 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-11-30
-**Latest Session:** Dashboard device settings fix & location display
+**Last Updated:** 2025-12-06
+**Latest Session:** Scout Device Firmware & AI Classification Service
 
 ---
 
@@ -191,36 +191,57 @@ brew services start mosquitto
 
 ```
 +------------------+      MQTT (1883)      +---------------+
-|  ESP32 Devices   |<-------------------->|   Mosquitto   |
-|  (Firmware)      |                       |   Broker      |
+|  Trap Devices    |<-------------------->|   Mosquitto   |
+|  (Full Firmware) |                       |   Broker      |
 +------------------+                       +---------------+
+         |                                         ^
+         | HTTP API                                |
+         v                                         |
++------------------+                               |
+|  Trap SPA        |                               |
+|  (Svelte)        |                               |
++------------------+                               |
+                                                   |
++------------------+      MQTT (1883)              |
+|  Scout Devices   |<------------------------------+
+|  (Motion Detect) |                               |
++------------------+                               |
          |                                         |
          | HTTP API                                | MQTT
          v                                         v
 +------------------+                       +---------------+
-|  Device SPA      |                       |   Server      |
+|  Scout SPA       |                       |   Server      |
 |  (Svelte)        |<--------------------->|   (Node.js)   |
 +------------------+      HTTP API         +---------------+
-                                                   |
-                                                   v
-                                           +---------------+
-                                           |  PostgreSQL   |
-                                           +---------------+
-                                                   ^
                                                    |
                                            +-------+-------+
                                            |               |
                                    +---------------+  +---------------+
-                                   |  Dashboard    |  |  Mobile App   |
-                                   |  (React)      |  |(React Native) |
+                                   |  TensorFlow.js|  |  PostgreSQL   |
+                                   |  (AI Classify)|  |               |
                                    +---------------+  +---------------+
+                                                              ^
                                                               |
-                                                              v
-                                                      +---------------+
-                                                      |  Expo Push    |
-                                                      | Notifications |
-                                                      +---------------+
+                                                      +-------+-------+
+                                                      |               |
+                                              +---------------+  +---------------+
+                                              |  Dashboard    |  |  Mobile App   |
+                                              |  (React)      |  |(React Native) |
+                                              +---------------+  +---------------+
+                                                                        |
+                                                                        v
+                                                                +---------------+
+                                                                |  Expo Push    |
+                                                                | Notifications |
+                                                                +---------------+
 ```
+
+### Device Types
+
+| Device | Purpose | Key Features |
+|--------|---------|--------------|
+| **Trap Device** | Physical rodent trap monitoring | Full trap mechanism, battery/solar, 13k lines firmware |
+| **Scout Device** | Entry point surveillance | Camera motion detection, USB-powered, ~900 lines firmware |
 
 ### Multi-Tenant Access Model
 
@@ -453,9 +474,97 @@ const API_BASE_URL = 'http://192.168.133.110:4000/api';
 
 ---
 
-## Current Session Notes (2025-11-30)
+## Current Session Notes (2025-12-06)
 
-### Latest Work: Dashboard Device Settings & Location Display
+### Latest Work: Scout Device Firmware & AI Classification Service
+
+**Status:** Complete - Scout device project created, AI classification service integrated
+
+**What Was Implemented:**
+
+#### 1. AI Classification Service (Server)
+
+Added TensorFlow.js-based image classification for rodent detection:
+
+- **Migration:** `014_classification.sql` - Classification results, model metadata, accuracy tracking
+- **Service:** `classification.service.ts` - MobileNet v2 model with lazy loading
+- **Routes:** `classification.routes.ts` - `/api/classification/classify`, `/status`, `/stats`
+- **Server Integration:** Added imports and initialization to `server.ts`
+- **Dependencies:** Installed `@tensorflow/tfjs-node`
+
+**API Endpoints:**
+- `POST /api/classification/classify` - Classify image (base64 or URL)
+- `GET /api/classification/status` - Model status (loaded, loading time, memory)
+- `GET /api/classification/stats` - Classification statistics
+
+#### 2. Scout Device Project
+
+Created `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/` - A simplified camera-based motion detection device for entry point monitoring.
+
+**Purpose:** Detect rodent activity at entry points (doorways, vents, holes) using camera motion detection with AI-powered false positive filtering.
+
+**Key Differences from Trap Device:**
+- Camera-only (no physical trap mechanism)
+- USB-powered only (no battery/solar)
+- ~900 lines of code (vs trap's 13,000 lines)
+- Size-based filtering to reject people/pets (>30%) and dust (<1%)
+- Server-side AI classification for captured images
+
+**Files Created:**
+
+1. **`camera_pins.h`** - GPIO definitions for multiple ESP32 camera boards:
+   - ESP32S3_CAM_LCD (default)
+   - AI_THINKER
+   - ESP32S3_EYE
+   - XIAO_ESP32S3
+
+2. **`motion_detect.h`** - MotionDetector class:
+   - Block-based frame comparison with configurable threshold
+   - Size filtering (minSizePercent, maxSizePercent)
+   - JPEG size heuristic for quick motion detection
+   - Bounding box detection for motion region
+
+3. **`scout_arduino.ino`** (~900 lines) - Main firmware:
+   - Camera initialization and streaming
+   - WiFi credential management (AP mode setup)
+   - MQTT connection with tenant/device topics
+   - Motion detection with size filtering
+   - Gallery with FIFO storage (configurable max)
+   - Web server with REST API
+   - OTA updates via ElegantOTA
+   - Dual provisioning: Device claiming OR standalone MQTT config
+
+4. **`Makefile`** - Build commands matching trap device pattern
+
+5. **`partitions.csv`** - Same partition layout as trap (16MB flash)
+
+6. **`build-littlefs.sh`** - LittleFS build script
+
+7. **`scout-spa/`** - Svelte SPA for device web interface:
+   - `Home.svelte` - Live camera view, status display
+   - `Gallery.svelte` - Motion captures with modal viewer
+   - `Settings.svelte` - Motion threshold/size sliders, system log
+   - `Setup.svelte` - WiFi config (phase 1), standalone MQTT config (phase 2)
+
+**Motion Detection Flow:**
+1. Camera captures frame at regular intervals
+2. MotionDetector compares with previous frame using block differencing
+3. If motion detected, calculate size as percentage of frame
+4. Filter: Reject if size < 1% (dust) or > 30% (people/pets)
+5. If passes filter, save to gallery and publish MQTT event
+6. Server receives event, runs AI classification
+7. Classification result (rodent vs pet vs person) stored in database
+
+**MQTT Topics (Scout):**
+- `tenant/{id}/device/{mac}/motion` - Motion event with image
+- `tenant/{id}/device/{mac}/status` - Device heartbeat
+- `tenant/{id}/device/{mac}/command/#` - Server commands
+
+---
+
+## Previous Session Notes (2025-11-30)
+
+### Previous Work: Dashboard Device Settings & Location Display
 
 **Status:** Complete - Fixed location save and improved device detail page
 
@@ -1105,6 +1214,9 @@ triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; messa
 - [x] **Immediate email on alert** - Emergency contacts notified immediately, not just via cron
 - [x] **Fixed Device Settings location save** - Superadmin PATCH endpoint now bypasses tenant filter
 - [x] **Location as snapshot card title** - Device detail shows location in card header
+- [x] **AI Classification Service** - TensorFlow.js with MobileNet v2 for rodent detection
+- [x] **Scout Device Project Created** - Camera-based motion detection firmware for entry points
+- [x] **Scout SPA Created** - Svelte web interface for scout device configuration
 
 **Pending:**
 - [ ] Deploy updated firmware to Biggy (escalation system compiled but not uploaded)
@@ -1113,6 +1225,9 @@ triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; messa
 - [ ] Mobile app: Configure EAS project ID (`eas init`) - requires Apple Developer account
 - [ ] Mobile app: Build for physical devices and test push notifications
 - [ ] Mobile app: Set up TestFlight and Play Store internal testing
+- [ ] **Scout: Handle `motion` MQTT topic on server** - Auto-trigger classification on motion events
+- [ ] **Scout: Test firmware on ESP32-S3-CAM hardware** - Compile, upload, verify motion detection
+- [ ] **Scout: Add scout device type to dashboard** - Display scout devices alongside traps
 
 ### Known Issues
 
@@ -1203,12 +1318,14 @@ curl -d @/tmp/request.json ...
 | Documentation navigation | [DOCUMENTATION-SYSTEM-GUIDE.md](./DOCUMENTATION-SYSTEM-GUIDE.md) |
 | Device claiming flow | [DEVICE-CLAIMING-FLOW.md](./DEVICE-CLAIMING-FLOW.md) |
 | **Device stranding & recovery** | **[Server/docs/DEVICE-STRANDING-SCENARIOS.md](./Server/docs/DEVICE-STRANDING-SCENARIOS.md)** |
-| Firmware compilation | [mousetrap_arduino/docs/FIRMWARE-COMPILATION.md](./mousetrap_arduino/docs/FIRMWARE-COMPILATION.md) |
-| OTA deployment | [mousetrap_arduino/docs/OTA-DEPLOYMENT.md](./mousetrap_arduino/docs/OTA-DEPLOYMENT.md) |
-| SPA development | [mousetrap_arduino/docs/SPA-DEVELOPMENT.md](./mousetrap_arduino/docs/SPA-DEVELOPMENT.md) |
+| Trap firmware compilation | [mousetrap_arduino/docs/FIRMWARE-COMPILATION.md](./mousetrap_arduino/docs/FIRMWARE-COMPILATION.md) |
+| Trap OTA deployment | [mousetrap_arduino/docs/OTA-DEPLOYMENT.md](./mousetrap_arduino/docs/OTA-DEPLOYMENT.md) |
+| Trap SPA development | [mousetrap_arduino/docs/SPA-DEVELOPMENT.md](./mousetrap_arduino/docs/SPA-DEVELOPMENT.md) |
 | Board settings | [mousetrap_arduino/docs/BOARD-SETTINGS.md](./mousetrap_arduino/docs/BOARD-SETTINGS.md) |
 | Device API | [mousetrap_arduino/docs/DEVICE-API.md](./mousetrap_arduino/docs/DEVICE-API.md) |
+| **Scout device** | **[scout_arduino/](../scout_arduino/)** - Entry point surveillance firmware |
 | Server API | [Server/docs/API-REFERENCE.md](./Server/docs/API-REFERENCE.md) |
+| **AI Classification** | **[Server/src/services/classification.service.ts](./src/services/classification.service.ts)** |
 | MQTT setup | [Server/docs/MQTT-SETUP.md](./Server/docs/MQTT-SETUP.md) |
 | Server deployment | [Server/docs/DEPLOYMENT.md](./Server/docs/DEPLOYMENT.md) |
 | **Mobile App** | **See "Mobile App" section above** |

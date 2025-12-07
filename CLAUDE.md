@@ -20,6 +20,9 @@ You are responsible for maintaining all project documentation:
 ## Key Locations
 
 - **Server:** `/Users/wadehargrove/Documents/MouseTrap/Server/`
-- **Firmware:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/`
+- **Trap Firmware:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/`
+- **Scout Firmware:** `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/`
 - **Dashboard:** `/Users/wadehargrove/Documents/MouseTrap/trap-dashboard/`
-- **Device SPA:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/trap-spa/`
+- **Mobile App:** `/Users/wadehargrove/Documents/MouseTrap/mobile-app/`
+- **Trap SPA:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/trap-spa/`
+- **Scout SPA:** `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/scout-spa/`

@@ -2230,6 +2230,13 @@ void publishDeviceStatus() {
   doc["rssi"] = WiFi.RSSI();
   doc["ip"] = WiFi.localIP().toString();
 
+  // Include alert/triggered state so server can sync on reconnect
+  doc["triggered"] = alertEscalation.isTriggered;
+  doc["alert_level"] = (int)alertEscalation.currentLevel;
+  if (alertEscalation.isTriggered && alertEscalation.triggeredAtEpoch > 0) {
+    doc["triggered_at"] = alertEscalation.triggeredAtEpoch;
+  }
+
   String payload;
   serializeJson(doc, payload);
 
@@ -7101,6 +7108,10 @@ void loadAlertStateFromNVS() {
   if (alertEscalation.isTriggered) {
     alertEscalation.lastBuzzerTime = millis();
     alertEscalation.lastLevelCheck = millis();
+
+    // Sync legacy detectionState for SPA display
+    detectionState = true;
+
     Serial.println("[ESCALATION] ========================================");
     Serial.println("[ESCALATION] RESTORED ALERT STATE FROM NVS");
     Serial.printf("[ESCALATION] Triggered at: %u\n", alertEscalation.triggeredAtEpoch);
@@ -7386,6 +7397,7 @@ void handleAlertClearCommand(JsonDocument& doc) {
   // Also clear the legacy detectionState
   detectionState = false;
   lastAlertTime = 0;
+  eventArmed = true;  // Re-arm so next test alert can take photos
 
   Serial.println("[ESCALATION] Alert cleared successfully");
   addSystemLog("[ESCALATION] Alert cleared by server: " + String(reason ? reason : "acknowledged"));
@@ -7433,6 +7445,11 @@ void handleTestTriggerCommand() {
     // Immediately update buzzer and LED for Level 1
     updateBuzzerForLevel(ALERT_LEVEL_1);
     updateLEDForLevel(ALERT_LEVEL_1);
+
+    // Capture photo with flash and upload to server (for gallery)
+    Serial.println("[ESCALATION] Capturing test alert photo with flash...");
+    addSystemLog("[ESCALATION] Capturing test photo");
+    captureAndUploadSnapshot();
   } else {
     Serial.println("[ESCALATION] Already triggered, ignoring test trigger");
     addSystemLog("[ESCALATION] Test trigger ignored - already triggered");
@@ -7964,6 +7981,15 @@ void handleReset(AsyncWebServerRequest *request) {
   lastEmailSuccess = false;
   detectionState = false;
   eventArmed = true;  // <‑‑ allow photos next time
+
+  // Clear escalation state (stops beeping/LED)
+  alertEscalation.isTriggered = false;
+  alertEscalation.currentLevel = ALERT_LEVEL_NONE;
+  alertEscalation.triggeredAtEpoch = 0;
+  alertEscalation.serverAcknowledged = true;
+  clearAlertStateFromNVS();
+  noTone(BUZZER_PIN);
+  digitalWrite(LED_PIN, LOW);
 
   notifyAlarmCleared("web");
   beepReady();

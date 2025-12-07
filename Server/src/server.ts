@@ -13,6 +13,7 @@ import { initPushService, getPushService } from './services/push.service';
 import { initEscalationService, getEscalationService } from './services/escalation.service';
 import { initSmsService } from './services/sms.service';
 import { initEmailService } from './services/email.service';
+import { initClassificationService, getClassificationService } from './services/classification.service';
 
 // Load environment variables
 dotenv.config();
@@ -68,6 +69,10 @@ if (emailService.isEnabled()) {
 } else {
   console.log('⚠ Email service not configured - Email alerts disabled');
 }
+
+// Initialize Classification service (AI-powered rodent detection)
+const classificationService = initClassificationService(dbPool);
+console.log('✓ Classification service initialized (lazy model loading)');
 
 // Initialize MQTT service
 const mqttService = new MqttService(
@@ -172,8 +177,9 @@ mqttService.on('device:offline', ({ tenantId, macAddress }) => {
 mqttService.on('alert:resolved', (data: any) => {
   console.log('[WS] Forwarding alert resolved:', data);
   io.to(`tenant:${data.tenantId}`).emit('alert:resolved', {
-    ...data,
-    timestamp: Date.now(),
+    type: 'alert:resolved',
+    payload: data,
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -391,6 +397,15 @@ try {
   logger.info('Push notification API routes initialized');
 } catch (e) {
   console.warn('Push notification routes not found - skipping');
+}
+
+try {
+  const classificationRoutes = require('./routes/classification.routes');
+  app.use('/api/classification', classificationRoutes.default || classificationRoutes);
+  console.log('✓ Classification routes loaded (AI rodent detection)');
+  logger.info('Classification API routes initialized');
+} catch (e) {
+  console.warn('Classification routes not found - skipping');
 }
 
 // 404 handler

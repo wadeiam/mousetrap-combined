@@ -436,6 +436,11 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
           // Log but don't fail - this is a preventive measure
           console.warn(`[MQTT] Could not clear retained revoke message for ${macAddress}:`, clearError);
         }
+
+        // Sync alert state: If device reports triggered=true, ensure server has active alert
+        if (status.triggered) {
+          await this.syncDeviceAlertState(tenantId, macAddress, status);
+        }
       } else {
         this.emit('device:offline', { tenantId, macAddress: macAddress.toUpperCase() });
       }
@@ -680,6 +685,103 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   }
 
   /**
+   * Sync device alert state on reconnect
+   * If device reports triggered=true but server has no active alert, create one
+   * This ensures dashboard stays in sync with device after reboots/disconnects
+   */
+  private async syncDeviceAlertState(tenantId: string, macAddress: string, status: DeviceStatusMessage): Promise<void> {
+    try {
+      // Get device ID
+      const deviceQuery = await this.db.query(
+        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress.toUpperCase()]
+      );
+
+      if (deviceQuery.rows.length === 0) {
+        console.warn(`[MQTT] Device not found for alert sync: ${macAddress}`);
+        return;
+      }
+
+      const deviceId = deviceQuery.rows[0].id;
+      const deviceName = deviceQuery.rows[0].name || macAddress;
+
+      // Check if there's already an active (non-resolved) alert for this device
+      const activeAlertQuery = await this.db.query(
+        `SELECT id FROM alerts
+         WHERE device_id = $1 AND status != 'resolved'
+         ORDER BY triggered_at DESC LIMIT 1`,
+        [deviceId]
+      );
+
+      if (activeAlertQuery.rows.length > 0) {
+        // Already have an active alert, no need to create another
+        console.log(`[MQTT] Device ${macAddress} has active alert, no sync needed`);
+        return;
+      }
+
+      // Device is triggered but server has no active alert - create one
+      console.log(`[MQTT] Syncing alert state for device ${macAddress} - creating alert from device state`);
+
+      const triggeredAt = status.triggered_at
+        ? new Date(status.triggered_at * 1000).toISOString()
+        : new Date().toISOString();
+
+      const insertQuery = `
+        INSERT INTO alerts (
+          device_id, tenant_id, severity, status, sensor_data, triggered_at
+        ) VALUES ($1, $2, 'high', 'new', $3, $4)
+        RETURNING id
+      `;
+
+      const sensorData = {
+        alert_type: 'trap_triggered',
+        message: 'Alert synced from device state on reconnect',
+        synced_from_device: true,
+        alert_level: status.alert_level || 1,
+      };
+
+      const result = await this.db.query(insertQuery, [
+        deviceId,
+        tenantId,
+        JSON.stringify(sensorData),
+        triggeredAt,
+      ]);
+
+      const alertId = result.rows[0].id;
+
+      // Emit WebSocket event for real-time UI update
+      this.emit('device:alert', {
+        id: alertId,
+        deviceId,
+        tenantId,
+        severity: 'high',
+        status: 'new',
+        type: 'trap_triggered',
+        message: 'Alert synced from device',
+        createdAt: triggeredAt,
+      });
+
+      logger.info('Alert synced from device state on reconnect', {
+        alertId,
+        deviceId,
+        tenantId,
+        macAddress: macAddress.toUpperCase(),
+        alertLevel: status.alert_level,
+        triggeredAt,
+      });
+
+      console.log(`[MQTT] Created synced alert ${alertId} for device ${deviceName}`);
+    } catch (error) {
+      console.error('[MQTT] Error syncing device alert state:', error);
+      logger.error('Error syncing device alert state', {
+        tenantId,
+        macAddress,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Handle alert cleared notification from device
    */
   private async handleAlertCleared(parsedTopic: ParsedTopic, message: any): Promise<void> {
@@ -705,19 +807,31 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       const deviceId = deviceQuery.rows[0].id;
 
       // Resolve all active alerts for this device
+      // Note: resolve_consistency constraint requires resolved_by (UUID) AND resolved_at when status='resolved'
+      // resolved_by has FK to users, so we need to find a user in the tenant to use
+      const userQuery = await this.db.query(
+        `SELECT u.id FROM users u
+         JOIN user_tenant_memberships utm ON u.id = utm.user_id
+         WHERE utm.tenant_id = $1
+         LIMIT 1`,
+        [tenantId]
+      );
+
+      // Use the first tenant user, or fall back to a hardcoded admin if none found
+      const resolvedBy = userQuery.rows[0]?.id || '10000000-0000-0000-0000-000000000001';
+
       const updateQuery = `
         UPDATE alerts
         SET status = 'resolved',
             resolved_at = NOW(),
-            notes = 'Cleared from device',
-            acknowledged_by = NULL,
-            acknowledged_at = NULL,
+            resolved_by = $3,
+            notes = COALESCE(notes || ' | ', '') || 'Cleared from device',
             updated_at = NOW()
         WHERE device_id = $1 AND tenant_id = $2 AND status IN ('new', 'acknowledged')
         RETURNING id
       `;
 
-      const result = await this.db.query(updateQuery, [deviceId, tenantId]);
+      const result = await this.db.query(updateQuery, [deviceId, tenantId, resolvedBy]);
 
       if (result.rows.length > 0) {
         console.log(`[MQTT] Cleared ${result.rows.length} alert(s) for device ${macAddress}`);

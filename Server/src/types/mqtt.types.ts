@@ -23,6 +23,10 @@ export interface DeviceStatusMessage {
   heap_free: number;     // bytes
   rssi: number;          // WiFi signal strength (dBm)
   ip: string;            // Local IP address
+  // Alert state (for sync on reconnect)
+  triggered?: boolean;   // Device is in triggered/alert state
+  alert_level?: number;  // Escalation level (0-5)
+  triggered_at?: number; // Unix timestamp when triggered
 }
 
 /**
