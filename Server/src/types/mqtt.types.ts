@@ -215,11 +215,30 @@ export interface MqttServiceEvents {
  * Parsed MQTT topic components
  */
 export interface ParsedTopic {
-  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'rotation_ack' | 'unknown';
+  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'rotation_ack' | 'motion_event' | 'unknown';
   tenantId?: string;
   macAddress?: string;
   commandType?: string;
   isGlobal?: boolean;
+}
+
+/**
+ * Motion Event Message (from Scout devices)
+ * Topic: tenant/{tenantId}/device/{macAddress}/motion
+ * QoS: 1, Retained: false
+ * Published: When motion is detected and passes size filter
+ */
+export interface MotionEventMessage {
+  image: string;           // Base64 JPEG image
+  timestamp: number;       // Unix timestamp (ms)
+  bounding_box?: {         // Motion region
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  size_percent?: number;   // Size as % of frame
+  confidence?: number;     // Detection confidence (0-1)
 }
 
 /**

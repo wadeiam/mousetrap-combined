@@ -206,7 +206,7 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
 
 console.log('CORS allowed origins:', allowedOrigins);
 
-// Initialize Socket.io with CORS
+// Initialize Socket.io with CORS and explicit timing settings
 const io = new SocketIOServer(server, {
   cors: {
     origin: (origin, callback) => {
@@ -219,6 +219,11 @@ const io = new SocketIOServer(server, {
     },
     credentials: true,
   },
+  // More lenient timing for mobile clients
+  pingTimeout: 60000,      // 60 seconds before considering connection dead
+  pingInterval: 25000,     // Ping every 25 seconds
+  connectTimeout: 45000,   // 45 seconds to establish connection
+  transports: ['websocket', 'polling'], // Allow both transports
 });
 
 // Socket.io connection handler

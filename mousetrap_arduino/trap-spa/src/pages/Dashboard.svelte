@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import Card from '../components/Card.svelte';
   import * as api from '../lib/api.js';
-  import { testAlert } from '../lib/api.js';
+  import { capturePhoto } from '../lib/api.js';
 
   let cameraImage = '/auto.jpg';
   let cameraError = false;
@@ -111,8 +111,9 @@
 
   async function handleCaptureScreenshot() {
     try {
-      await testAlert();
-      // Optionally show a success message or refresh the camera
+      const result = await capturePhoto();
+      console.log('Photo captured:', result);
+      // Refresh the camera to show the new image
       await refreshCamera();
     } catch (err) {
       console.error('Capture screenshot error:', err);

@@ -9643,6 +9643,35 @@ void setupEndpoints() {
   server.on("/fs/get",  HTTP_GET, protectHandler(handleFsGet));
   server.on("/api/captures", HTTP_GET, protectHandler(handleApiCaptures));
 
+  // Capture photo endpoint (without triggering alert)
+  server.on("/api/capture", HTTP_POST, protectHandler([](AsyncWebServerRequest* req) {
+    // Generate filename with timestamp
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char filename[64];
+    snprintf(filename, sizeof(filename), "/captures/snap_%04d%02d%02d_%02d%02d%02d.jpg",
+             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+             t->tm_hour, t->tm_min, t->tm_sec);
+
+    // Capture with flash
+    bool success = captureSingleFrame(String(filename), true);
+
+    JsonDocument doc;
+    if (success) {
+      doc["success"] = true;
+      doc["filename"] = filename;
+      doc["message"] = "Photo captured successfully";
+      addSystemLog(String("Photo captured: ") + filename);
+    } else {
+      doc["success"] = false;
+      doc["error"] = "Failed to capture photo";
+    }
+
+    String json;
+    serializeJson(doc, json);
+    req->send(success ? 200 : 500, "application/json", json);
+  }));
+
   // Device Provisioning API Endpoints
   server.on("/api/device/claim-status", HTTP_GET, [](AsyncWebServerRequest* req) {
     JsonDocument doc;

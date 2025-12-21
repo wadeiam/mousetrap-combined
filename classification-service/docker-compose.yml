@@ -1,0 +1,22 @@
+# Standalone docker-compose for testing classification service
+# Run: docker compose up --build
+
+version: '3.8'
+
+services:
+  classification:
+    build: .
+    container_name: mousetrap-classification
+    ports:
+      - "3100:3100"
+    environment:
+      - PORT=3100
+      - NODE_ENV=production
+    restart: unless-stopped
+    # Resource limits for TensorFlow
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M

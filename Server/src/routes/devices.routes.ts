@@ -781,10 +781,16 @@ router.post('/:id/clear-alerts', requireRole('admin', 'superadmin'), async (req:
     const { mqtt_client_id, tenant_id: deviceTenantId } = deviceResult.rows[0];
 
     // Clear all active alerts for this device (use device's tenant_id for superadmins)
+    // Must clear acknowledged_at/acknowledged_by to satisfy ack_consistency constraint
     const effectiveTenantId = userRole === 'superadmin' ? deviceTenantId : tenantId;
     const result = await dbPool.query(
       `UPDATE alerts
-       SET status = 'resolved', resolved_at = NOW(), resolved_by = $3, updated_at = NOW()
+       SET status = 'resolved',
+           resolved_at = NOW(),
+           resolved_by = $3,
+           acknowledged_at = NULL,
+           acknowledged_by = NULL,
+           updated_at = NOW()
        WHERE tenant_id = $1 AND device_id = $2 AND status IN ('new', 'acknowledged')
        RETURNING id`,
       [effectiveTenantId, id, userId]
@@ -800,10 +806,8 @@ router.post('/:id/clear-alerts', requireRole('admin', 'superadmin'), async (req:
 
     res.json({
       success: true,
-      data: {
-        message: `Cleared ${result.rows.length} alert(s)`,
-        clearedCount: result.rows.length,
-      },
+      message: `Cleared ${result.rows.length} alert(s)`,
+      cleared: result.rows.length,
     });
   } catch (error: any) {
     console.error('Clear alerts error:', error);

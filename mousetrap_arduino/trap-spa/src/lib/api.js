@@ -233,6 +233,11 @@ export async function testAlert() {
   return response;
 }
 
+export async function capturePhoto() {
+  // Captures a photo and saves to filesystem (without triggering alert)
+  return apiFetch('/api/capture', { method: 'POST' });
+}
+
 // ============================================================================
 // Settings & Config
 // ============================================================================

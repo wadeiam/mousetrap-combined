@@ -20,12 +20,14 @@ import {
   FirmwareUpdateMessage,
   FilesystemUpdateMessage,
   DeviceCommandMessage,
+  MotionEventMessage,
   MqttConfig,
   MqttServiceEvents,
   ParsedTopic,
   MqttPublishOptions,
   mqttTopics,
 } from '../types/mqtt.types';
+import { classifyImage, ClassificationResponse } from './classification.client';
 
 // Type-safe EventEmitter
 interface TypedEventEmitter {
@@ -223,6 +225,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       { topic: 'tenant/+/device/+/alert_cleared', qos: this.config.qos.default },
       // Subscribe to credential rotation ACKs from devices
       { topic: 'tenant/+/device/+/rotation_ack', qos: this.config.qos.commands },
+      // Subscribe to motion events from Scout devices (AI classification)
+      { topic: 'tenant/+/device/+/motion', qos: this.config.qos.default },
     ];
 
     subscriptions.forEach(({ topic, qos }) => {
@@ -269,6 +273,10 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
         case 'rotation_ack':
           this.handleRotationAck(parsedTopic, message);
+          break;
+
+        case 'motion_event':
+          await this.handleMotionEvent(parsedTopic, message as MotionEventMessage);
           break;
 
         default:
@@ -334,6 +342,15 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     if (parts[0] === 'tenant' && parts[2] === 'device' && parts[4] === 'rotation_ack') {
       return {
         type: 'rotation_ack',
+        tenantId: parts[1],
+        macAddress: parts[3],
+      };
+    }
+
+    // tenant/{tenantId}/device/{macAddress}/motion
+    if (parts[0] === 'tenant' && parts[2] === 'device' && parts[4] === 'motion') {
+      return {
+        type: 'motion_event',
         tenantId: parts[1],
         macAddress: parts[3],
       };
@@ -599,6 +616,17 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
       const deviceId = deviceQuery.rows[0].id;
 
+      // Check if device already has an active alert - only one alert per trap
+      const existingAlert = await this.db.query(
+        `SELECT id FROM alerts WHERE device_id = $1 AND status IN ('new', 'acknowledged') LIMIT 1`,
+        [deviceId]
+      );
+
+      if (existingAlert.rows.length > 0) {
+        console.log(`[MQTT] Device ${macAddress} already has active alert ${existingAlert.rows[0].id}, skipping new alert`);
+        return;
+      }
+
       // Create alert in database
       const insertQuery = `
         INSERT INTO alerts (
@@ -848,6 +876,211 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     } catch (error) {
       console.error('[MQTT] Error clearing alerts:', error);
       logger.error('Error clearing device alerts', {
+        tenantId,
+        macAddress,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Handle motion event from Scout device
+   * Sends image to classification service and stores result
+   */
+  private async handleMotionEvent(parsedTopic: ParsedTopic, message: MotionEventMessage): Promise<void> {
+    const { tenantId, macAddress } = parsedTopic;
+
+    if (!tenantId || !macAddress) {
+      console.error('[MQTT] Invalid motion event - missing tenantId or macAddress');
+      return;
+    }
+
+    const startTime = Date.now();
+    console.log(`[MQTT] Motion event received from ${macAddress} (tenant: ${tenantId})`);
+
+    try {
+      // Get device ID from mqtt_client_id
+      const deviceQuery = await this.db.query(
+        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress.toUpperCase()]
+      );
+
+      if (deviceQuery.rows.length === 0) {
+        console.warn(`[MQTT] Device not found for motion event: ${macAddress}`);
+        return;
+      }
+
+      const deviceId = deviceQuery.rows[0].id;
+      const deviceName = deviceQuery.rows[0].name || macAddress;
+
+      // Extract image from message
+      const imageBase64 = message.image;
+      if (!imageBase64) {
+        console.warn(`[MQTT] Motion event missing image data from ${macAddress}`);
+        return;
+      }
+
+      // Call classification service
+      logger.info('Classifying motion event image', {
+        tenantId,
+        macAddress,
+        deviceId,
+        imageSize: imageBase64.length,
+      });
+
+      const classification = await classifyImage(imageBase64);
+      const classificationTimeMs = Date.now() - startTime;
+
+      console.log(`[MQTT] Classification result for ${macAddress}: ${classification.classification} (${(classification.confidence * 100).toFixed(1)}%)`);
+
+      // Store classification result in database
+      const insertQuery = `
+        INSERT INTO image_classifications (
+          device_id,
+          tenant_id,
+          image_hash,
+          classification,
+          confidence,
+          all_predictions,
+          model_version,
+          inference_time_ms,
+          image_source
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING id, classified_at
+      `;
+
+      // Generate hash for deduplication
+      const crypto = await import('crypto');
+      const imageHash = crypto.createHash('sha256').update(imageBase64.slice(0, 1000)).digest('hex');
+
+      const result = await this.db.query(insertQuery, [
+        deviceId,
+        tenantId,
+        imageHash,
+        classification.classification,
+        classification.confidence,
+        JSON.stringify(classification.predictions),
+        'mobilenet-docker-v1',
+        classification.processingTimeMs || classificationTimeMs,
+        'motion_event',
+      ]);
+
+      const classificationId = result.rows[0].id;
+
+      // Update device's last classification
+      await this.db.query(
+        `UPDATE devices SET
+          last_classification = $2,
+          last_classification_confidence = $3,
+          last_classification_at = NOW(),
+          updated_at = NOW()
+        WHERE id = $1`,
+        [deviceId, classification.classification, classification.confidence]
+      );
+
+      logger.info('Motion event classified and stored', {
+        classificationId,
+        deviceId,
+        tenantId,
+        classification: classification.classification,
+        confidence: classification.confidence,
+        topMatch: classification.topMatch,
+        timeMs: classificationTimeMs,
+      });
+
+      // If rodent detected with high confidence, create an alert
+      if (classification.classification === 'rodent' && classification.confidence > 0.5) {
+        // Check if device already has an active alert - only one alert per trap
+        const existingAlert = await this.db.query(
+          `SELECT id FROM alerts WHERE device_id = $1 AND status IN ('new', 'acknowledged') LIMIT 1`,
+          [deviceId]
+        );
+
+        if (existingAlert.rows.length > 0) {
+          console.log(`[MQTT] Device ${deviceName} already has active alert, skipping rodent detection alert`);
+        } else {
+          console.log(`[MQTT] Rodent detected by ${deviceName}! Creating alert...`);
+
+          const alertQuery = `
+            INSERT INTO alerts (
+              device_id, tenant_id, severity, status, sensor_data, triggered_at
+            ) VALUES ($1, $2, $3, $4, $5, NOW())
+            RETURNING id
+          `;
+
+        const severity = classification.confidence > 0.8 ? 'high' : 'medium';
+        const sensorData = {
+          alert_type: 'rodent_detected',
+          message: `Rodent detected with ${(classification.confidence * 100).toFixed(0)}% confidence`,
+          classification: classification.classification,
+          confidence: classification.confidence,
+          topMatch: classification.topMatch,
+          classificationId,
+          source: 'ai_classification',
+        };
+
+        const alertResult = await this.db.query(alertQuery, [
+          deviceId,
+          tenantId,
+          severity,
+          'new',
+          JSON.stringify(sensorData),
+        ]);
+
+        const alertId = alertResult.rows[0].id;
+
+        // Emit WebSocket event for real-time notification
+        this.emit('device:alert', {
+          id: alertId,
+          deviceId,
+          tenantId,
+          severity,
+          status: 'new',
+          type: 'rodent_detected',
+          message: sensorData.message,
+          createdAt: new Date().toISOString(),
+        });
+
+        // Send push notification
+        const pushService = getPushService();
+        if (pushService) {
+          pushService.handleAlertNotification({
+            alertId,
+            deviceId,
+            deviceName,
+            alertType: 'rodent_detected',
+            severity,
+            tenantId,
+            message: sensorData.message,
+          }).catch((err: Error) => {
+            logger.error('Failed to send push notification for rodent detection', { error: err.message, alertId });
+          });
+        }
+
+        // Notify emergency contacts
+        this.notifyEmergencyContactsImmediately(tenantId, deviceName, alertId).catch((err: Error) => {
+          logger.error('Failed to notify emergency contacts for rodent detection', { error: err.message, alertId });
+        });
+
+          console.log(`[MQTT] Alert ${alertId} created for rodent detection on ${deviceName}`);
+        }
+      }
+
+      // Emit classification event for WebSocket/dashboard updates
+      this.emit('motion_classified' as any, {
+        tenantId,
+        deviceId,
+        macAddress: macAddress.toUpperCase(),
+        classification: classification.classification,
+        confidence: classification.confidence,
+        topMatch: classification.topMatch,
+        classificationId,
+        timestamp: message.timestamp || Date.now(),
+      });
+
+    } catch (error) {
+      console.error('[MQTT] Error handling motion event:', error);
+      logger.error('Error handling motion event', {
         tenantId,
         macAddress,
         error: error instanceof Error ? error.message : String(error),

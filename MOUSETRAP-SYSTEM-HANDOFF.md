@@ -152,6 +152,48 @@ npm run build
 pm2 restart mqtt-server
 ```
 
+### Classification Service (Docker)
+
+**Purpose:** AI-powered image classification for rodent detection from Scout devices.
+
+**Container:** `mousetrap-classification` running on port 3100
+
+```bash
+# Start classification service
+cd /Users/wadehargrove/Documents/MouseTrap/classification-service
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Check status
+curl http://localhost:3100/status
+
+# Test classification (base64 image)
+curl -X POST http://localhost:3100/classify \
+  -H "Content-Type: application/json" \
+  -d '{"image": "data:image/jpeg;base64,..."}'
+```
+
+**Environment Variable:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLASSIFICATION_SERVICE_URL` | `http://localhost:3100` | URL for main server to call classification service |
+
+**Classification Categories:**
+| Category | Description |
+|----------|-------------|
+| `rodent` | Target animals (mouse, rat, hamster) |
+| `pet` | Common pets (cat, dog) |
+| `person` | Humans |
+| `other` | Other objects |
+| `unknown` | Low confidence |
+
+**Files:**
+- `classification-service/` - Standalone Docker container
+- `Server/src/services/classification.client.ts` - HTTP client for main server
+- `Server/src/services/mqtt.service.ts` - Motion event handler calls classification
+
 ### MQTT (Mosquitto)
 
 **Current Mode:** Dynamic Security (Docker)
@@ -476,13 +518,50 @@ const API_BASE_URL = 'http://192.168.133.110:4000/api';
 
 ## Current Session Notes (2025-12-06)
 
-### Latest Work: Scout Device Firmware & AI Classification Service
+### Latest Work: Scout Device Firmware & AI Classification Docker Service
 
-**Status:** Complete - Scout device project created, AI classification service integrated
+**Status:** Complete - Scout device project created, AI classification Docker container deployed, MQTT integration complete
 
 **What Was Implemented:**
 
-#### 1. AI Classification Service (Server)
+#### 1. Classification Docker Container (NEW)
+
+Created standalone Docker container for AI classification (replaces in-process TensorFlow):
+
+- **Location:** `/Users/wadehargrove/Documents/MouseTrap/classification-service/`
+- **Container:** `mousetrap-classification` on port 3100
+- **Model:** TensorFlow.js with MobileNet v2 (loads in ~3 seconds)
+- **Categories:** `rodent`, `pet`, `person`, `other`, `unknown`
+
+**Files Created:**
+- `classification-service/package.json` - TensorFlow.js dependencies
+- `classification-service/src/server.ts` - Express server with classification endpoints
+- `classification-service/Dockerfile` - Multi-stage build for Linux native bindings
+- `classification-service/docker-compose.yml` - Standalone container config
+- `classification-service/test/test-classification.js` - Automated test script
+- `classification-service/README.md` - Testing plan and API docs
+
+**API Endpoints:**
+- `GET /health` - Health check
+- `GET /status` - Model status, memory usage, classification count
+- `POST /classify` - Classify image (base64 data URL)
+- `POST /load-model` - Preload the model
+
+#### 2. Server Integration for Motion Events
+
+Updated main server to receive Scout motion events and call classification service:
+
+- **Client:** `Server/src/services/classification.client.ts` - HTTP client for Docker service
+- **MQTT Handler:** Added `handleMotionEvent()` in `mqtt.service.ts`
+- **Topic Subscription:** `tenant/+/device/+/motion`
+- **Flow:** Motion event → Classification → Database storage → Alert if rodent detected
+
+**Environment Variable:**
+```
+CLASSIFICATION_SERVICE_URL=http://localhost:3100
+```
+
+#### 3. AI Classification Service (Server - Previous)
 
 Added TensorFlow.js-based image classification for rodent detection:
 
@@ -497,7 +576,7 @@ Added TensorFlow.js-based image classification for rodent detection:
 - `GET /api/classification/status` - Model status (loaded, loading time, memory)
 - `GET /api/classification/stats` - Classification statistics
 
-#### 2. Scout Device Project
+#### 4. Scout Device Project
 
 Created `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/` - A simplified camera-based motion detection device for entry point monitoring.
 
@@ -1217,6 +1296,8 @@ triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; messa
 - [x] **AI Classification Service** - TensorFlow.js with MobileNet v2 for rodent detection
 - [x] **Scout Device Project Created** - Camera-based motion detection firmware for entry points
 - [x] **Scout SPA Created** - Svelte web interface for scout device configuration
+- [x] **Classification Docker Container** - Standalone container with TensorFlow.js MobileNet
+- [x] **Server MQTT Motion Handler** - Receives motion events, calls classification, stores results
 
 **Pending:**
 - [ ] Deploy updated firmware to Biggy (escalation system compiled but not uploaded)
@@ -1225,7 +1306,6 @@ triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; messa
 - [ ] Mobile app: Configure EAS project ID (`eas init`) - requires Apple Developer account
 - [ ] Mobile app: Build for physical devices and test push notifications
 - [ ] Mobile app: Set up TestFlight and Play Store internal testing
-- [ ] **Scout: Handle `motion` MQTT topic on server** - Auto-trigger classification on motion events
 - [ ] **Scout: Test firmware on ESP32-S3-CAM hardware** - Compile, upload, verify motion detection
 - [ ] **Scout: Add scout device type to dashboard** - Display scout devices alongside traps
 
@@ -1325,7 +1405,9 @@ curl -d @/tmp/request.json ...
 | Device API | [mousetrap_arduino/docs/DEVICE-API.md](./mousetrap_arduino/docs/DEVICE-API.md) |
 | **Scout device** | **[scout_arduino/](../scout_arduino/)** - Entry point surveillance firmware |
 | Server API | [Server/docs/API-REFERENCE.md](./Server/docs/API-REFERENCE.md) |
-| **AI Classification** | **[Server/src/services/classification.service.ts](./src/services/classification.service.ts)** |
+| **Classification Docker** | **[classification-service/](../classification-service/)** - AI classification container |
+| **Classification Client** | **[Server/src/services/classification.client.ts](./src/services/classification.client.ts)** - HTTP client |
+| AI Classification (legacy) | [Server/src/services/classification.service.ts](./src/services/classification.service.ts) |
 | MQTT setup | [Server/docs/MQTT-SETUP.md](./Server/docs/MQTT-SETUP.md) |
 | Server deployment | [Server/docs/DEPLOYMENT.md](./Server/docs/DEPLOYMENT.md) |
 | **Mobile App** | **See "Mobile App" section above** |

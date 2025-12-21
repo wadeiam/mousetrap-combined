@@ -316,6 +316,185 @@ router.post('/:id/correct', async (req: AuthRequest, res: Response) => {
 });
 
 /**
+ * GET /api/classification/activity
+ * Get activity summary for dashboard visualization
+ * Returns per-device activity, recent detections, and trend data
+ */
+router.get('/activity', async (req: AuthRequest, res: Response) => {
+  logger.info('Activity endpoint called', { tenantId: req.user?.tenantId, role: req.user?.role });
+  try {
+    const tenantId = req.user!.tenantId;
+    const isSuperAdmin = req.user!.role === 'superadmin';
+    const days = parseInt(req.query.days as string) || 7;
+
+    // Query parameters for tenant filtering
+    const tenantFilter = isSuperAdmin ? '' : 'AND d.tenant_id = $1';
+    const params = isSuperAdmin ? [] : [tenantId];
+
+    // 1. Per-device activity (last N days)
+    const deviceActivityQuery = `
+      SELECT
+        d.id as device_id,
+        d.name as device_name,
+        d.location,
+        d.device_type,
+        COALESCE(d.location_type, 'interior') as location_type,
+        COUNT(ic.id) as detection_count,
+        MAX(ic.classified_at) as last_detection,
+        COUNT(CASE WHEN ic.classification IN ('mouse', 'rat', 'hamster', 'rodent') THEN 1 END) as rodent_count
+      FROM devices d
+      LEFT JOIN image_classifications ic ON d.id = ic.device_id
+        AND ic.classified_at > NOW() - INTERVAL '${days} days'
+      WHERE 1=1 ${tenantFilter}
+      GROUP BY d.id, d.name, d.location, d.device_type, d.location_type
+      HAVING COUNT(ic.id) > 0
+      ORDER BY detection_count DESC
+      LIMIT 10
+    `;
+
+    const deviceActivity = await dbPool.query(deviceActivityQuery, params);
+
+    // 2. Recent detections with classification (last 20)
+    const recentQuery = `
+      SELECT
+        ic.id,
+        ic.device_id,
+        d.name as device_name,
+        d.location as device_location,
+        ic.classification,
+        ic.confidence,
+        ic.classified_at,
+        ic.image_source,
+        ic.image_hash as image_preview
+      FROM image_classifications ic
+      JOIN devices d ON ic.device_id = d.id
+      WHERE ic.classified_at > NOW() - INTERVAL '${days} days'
+        ${tenantFilter.replace('d.tenant_id', 'ic.tenant_id')}
+      ORDER BY ic.classified_at DESC
+      LIMIT 20
+    `;
+
+    const recentDetections = await dbPool.query(recentQuery, params);
+
+    // 3. Daily trend (detections per day for last N days)
+    const trendQuery = `
+      SELECT
+        DATE(ic.classified_at) as date,
+        COUNT(*) as total,
+        COUNT(CASE WHEN ic.classification IN ('mouse', 'rat', 'hamster', 'rodent') THEN 1 END) as rodents
+      FROM image_classifications ic
+      WHERE ic.classified_at > NOW() - INTERVAL '${days} days'
+        ${tenantFilter.replace('d.tenant_id', 'ic.tenant_id')}
+      GROUP BY DATE(ic.classified_at)
+      ORDER BY date ASC
+    `;
+
+    const trend = await dbPool.query(trendQuery, params);
+
+    // 4. Hourly distribution (when are detections happening)
+    const hourlyQuery = `
+      SELECT
+        EXTRACT(HOUR FROM ic.classified_at) as hour,
+        COUNT(*) as count
+      FROM image_classifications ic
+      WHERE ic.classified_at > NOW() - INTERVAL '${days} days'
+        ${tenantFilter.replace('d.tenant_id', 'ic.tenant_id')}
+      GROUP BY EXTRACT(HOUR FROM ic.classified_at)
+      ORDER BY hour ASC
+    `;
+
+    const hourly = await dbPool.query(hourlyQuery, params);
+
+    // Calculate summary stats
+    const totalDetections = deviceActivity.rows.reduce(
+      (sum, d) => sum + parseInt(d.detection_count),
+      0
+    );
+    const totalRodents = deviceActivity.rows.reduce(
+      (sum, d) => sum + parseInt(d.rodent_count),
+      0
+    );
+
+    // Find peak hour
+    let peakHour = 0;
+    let peakCount = 0;
+    hourly.rows.forEach((h: { hour: number; count: string }) => {
+      const count = parseInt(h.count);
+      if (count > peakCount) {
+        peakCount = count;
+        peakHour = h.hour;
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        summary: {
+          totalDetections,
+          totalRodents,
+          deviceCount: deviceActivity.rows.length,
+          peakHour,
+          peakHourFormatted: `${peakHour}:00 - ${(peakHour + 1) % 24}:00`,
+          days,
+        },
+        deviceActivity: deviceActivity.rows.map((d) => ({
+          deviceId: d.device_id,
+          deviceName: d.device_name,
+          location: d.location,
+          deviceType: d.device_type,
+          locationType: d.location_type,
+          detectionCount: parseInt(d.detection_count),
+          rodentCount: parseInt(d.rodent_count),
+          lastDetection: d.last_detection,
+          recommendation: getRecommendation(d.location_type, parseInt(d.detection_count)),
+        })),
+        recentDetections: recentDetections.rows.map((r) => ({
+          id: r.id,
+          deviceId: r.device_id,
+          deviceName: r.device_name,
+          location: r.device_location,
+          classification: r.classification,
+          confidence: parseFloat(r.confidence),
+          classifiedAt: r.classified_at,
+          source: r.image_source,
+          hasImage: !!r.image_preview,
+        })),
+        trend: trend.rows.map((t) => ({
+          date: t.date,
+          total: parseInt(t.total),
+          rodents: parseInt(t.rodents),
+        })),
+        hourlyDistribution: hourly.rows.map((h) => ({
+          hour: parseInt(h.hour),
+          count: parseInt(h.count),
+        })),
+      },
+    });
+  } catch (error: any) {
+    logger.error('Failed to get activity summary', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Failed to get activity summary', details: error.message });
+  }
+});
+
+// Helper function to generate recommendations based on location type and activity
+function getRecommendation(locationType: string, detectionCount: number): string {
+  if (detectionCount === 0) return 'No recent activity';
+
+  const urgency = detectionCount >= 10 ? 'High activity - ' : detectionCount >= 5 ? 'Moderate activity - ' : '';
+
+  switch (locationType) {
+    case 'entry_point':
+      return `${urgency}Seal this entry point`;
+    case 'interior':
+      return `${urgency}Place trap here`;
+    case 'both':
+      return `${urgency}Seal AND place trap`;
+    default:
+      return `${urgency}Investigate this location`;
+  }
+}
+
+/**
  * GET /api/classification/stats
  * Get classification statistics for the tenant
  */

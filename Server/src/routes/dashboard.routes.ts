@@ -55,27 +55,27 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
       queryParams
     );
 
-    // Get alert statistics
+    // Get alert statistics from alerts table (not device_alerts)
     const alertStatsResult = await dbPool.query(
       `SELECT
         COUNT(*) as total_alerts,
-        SUM(CASE WHEN alert_status = 'new' THEN 1 ELSE 0 END) as active_alerts,
-        SUM(CASE WHEN alert_status = 'new' AND acknowledged_at IS NULL THEN 1 ELSE 0 END) as unacknowledged_alerts,
-        SUM(CASE WHEN severity = 'critical' AND alert_status = 'new' THEN 1 ELSE 0 END) as critical_alerts
-      FROM device_alerts
+        SUM(CASE WHEN status IN ('new', 'acknowledged') THEN 1 ELSE 0 END) as active_alerts,
+        SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) as unacknowledged_alerts,
+        SUM(CASE WHEN severity = 'critical' AND status IN ('new', 'acknowledged') THEN 1 ELSE 0 END) as critical_alerts
+      FROM alerts
       WHERE triggered_at > NOW() - INTERVAL '30 days' ${tenantFilter}`,
       queryParams
     );
 
-    // Get recent alerts (last 24 hours)
+    // Get recent alerts (last 24 hours) from alerts table
     const recentAlertsQuery = showAllTenants
       ? `SELECT
           a.id,
-          a.alert_type as type,
+          a.sensor_data->>'alert_type' as type,
           a.severity,
-          a.message,
+          a.sensor_data->>'message' as message,
           a.triggered_at as "createdAt",
-          a.alert_status as status,
+          a.status,
           a.acknowledged_at as "acknowledgedAt",
           a.acknowledged_by as "acknowledgedBy",
           a.resolved_at as "resolvedAt",
@@ -86,20 +86,20 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           d.name as "deviceName",
           d.location,
           d.label,
-          d.mac_address
-        FROM device_alerts a
-        LEFT JOIN devices d ON a.tenant_id = d.tenant_id AND a.mac_address = d.mac_address
+          d.mqtt_client_id as mac_address
+        FROM alerts a
+        LEFT JOIN devices d ON a.device_id = d.id
         LEFT JOIN tenants t ON a.tenant_id = t.id
         WHERE a.triggered_at > NOW() - INTERVAL '24 hours'
         ORDER BY a.triggered_at DESC
         LIMIT 10`
       : `SELECT
           a.id,
-          a.alert_type as type,
+          a.sensor_data->>'alert_type' as type,
           a.severity,
-          a.message,
+          a.sensor_data->>'message' as message,
           a.triggered_at as "createdAt",
-          a.alert_status as status,
+          a.status,
           a.acknowledged_at as "acknowledgedAt",
           a.acknowledged_by as "acknowledgedBy",
           a.resolved_at as "resolvedAt",
@@ -108,9 +108,9 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           d.name as "deviceName",
           d.location,
           d.label,
-          d.mac_address
-        FROM device_alerts a
-        LEFT JOIN devices d ON a.tenant_id = d.tenant_id AND a.mac_address = d.mac_address
+          d.mqtt_client_id as mac_address
+        FROM alerts a
+        LEFT JOIN devices d ON a.device_id = d.id
         WHERE a.tenant_id = $1 AND a.triggered_at > NOW() - INTERVAL '24 hours'
         ORDER BY a.triggered_at DESC
         LIMIT 10`;
@@ -119,9 +119,9 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
 
     // Get alerting devices count (devices with active alerts)
     const alertingDevicesResult = await dbPool.query(
-      `SELECT COUNT(DISTINCT mac_address) as alerting_devices
-      FROM device_alerts
-      WHERE alert_status = 'new'
+      `SELECT COUNT(DISTINCT device_id) as alerting_devices
+      FROM alerts
+      WHERE status IN ('new', 'acknowledged')
       AND triggered_at > NOW() - INTERVAL '24 hours' ${tenantFilter}`,
       queryParams
     );
@@ -170,9 +170,9 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
         },
         recentAlerts: recentAlertsResult.rows.map((alert: any) => ({
           id: alert.id,
-          type: alert.type,
+          type: alert.type || 'trap_triggered',
           severity: alert.severity,
-          message: alert.message,
+          message: alert.message || 'Alert triggered',
           createdAt: alert.createdAt,
           isAcknowledged: alert.status === 'acknowledged' || !!alert.acknowledgedAt,
           acknowledgedAt: alert.acknowledgedAt,
@@ -183,11 +183,9 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           deviceId: alert.deviceId,
           tenantId: alert.tenantId || tenantId,
           tenantName: alert.tenantName,
-          device: alert.deviceName ? {
-            id: alert.deviceId,
-            name: alert.deviceName,
-            location: alert.location,
-          } : undefined,
+          macAddress: alert.mac_address,
+          location: alert.location,
+          deviceName: alert.deviceName || alert.label || alert.location,
         })),
         // Include flag for frontend to know if this is master tenant view
         isMasterTenantView: showAllTenants,

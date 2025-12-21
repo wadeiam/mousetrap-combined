@@ -19,6 +19,8 @@ router.use((req: AuthRequest, _res: Response, next) => {
 });
 
 // GET /alerts - List all alerts with pagination and filters
+// Note: Alerts are stored in the 'alerts' table (not 'device_alerts')
+// The sensor_data JSONB column contains alert_type, message, etc.
 router.get('/', async (req: AuthRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -43,17 +45,33 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     );
     const isMasterTenantAdmin = superadminCheck.rows.length > 0;
 
+    // Query the 'alerts' table (where alerts are actually inserted)
+    // Join with devices to get mac_address for MQTT commands
     let query = `
       SELECT
-        a.id, a.device_id, a.tenant_id, a.alert_type, a.alert_status as status,
-        a.severity, a.message, a.triggered_at,
-        a.acknowledged_at, a.acknowledged_by, a.resolved_at, a.resolved_by,
-        a.created_at, a.updated_at,
-        a.mac_address, a.location, a.label,
-        (a.alert_status = 'acknowledged' OR a.alert_status = 'resolved') as "isAcknowledged",
-        (a.alert_status = 'resolved') as "isResolved",
+        a.id,
+        a.device_id,
+        a.tenant_id,
+        a.severity,
+        a.status,
+        a.sensor_data->>'alert_type' as alert_type,
+        a.sensor_data->>'message' as message,
+        a.triggered_at,
+        a.acknowledged_at,
+        a.acknowledged_by,
+        a.resolved_at,
+        a.resolved_by,
+        a.resolved_notes,
+        a.created_at,
+        a.updated_at,
+        d.mqtt_client_id as mac_address,
+        d.location,
+        d.label,
+        (a.status = 'acknowledged' OR a.status = 'resolved') as "isAcknowledged",
+        (a.status = 'resolved') as "isResolved",
         t.name as tenant_name
-      FROM device_alerts a
+      FROM alerts a
+      LEFT JOIN devices d ON a.device_id = d.id
       LEFT JOIN tenants t ON a.tenant_id = t.id
       WHERE 1=1
     `;
@@ -76,9 +94,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       paramIndex++;
     }
 
-    // Filter by alert type
+    // Filter by alert type (from sensor_data JSONB)
     if (type) {
-      query += ` AND a.alert_type = $${paramIndex}`;
+      query += ` AND a.sensor_data->>'alert_type' = $${paramIndex}`;
       params.push(type);
       paramIndex++;
     }
@@ -102,9 +120,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     // Filter by resolved status
     if (isResolved !== undefined) {
       if (isResolved === 'true') {
-        query += ` AND a.alert_status = 'resolved'`;
+        query += ` AND a.status = 'resolved'`;
       } else if (isResolved === 'false') {
-        query += ` AND a.alert_status IN ('new', 'acknowledged')`;
+        query += ` AND a.status IN ('new', 'acknowledged')`;
       }
     }
 
@@ -126,20 +144,20 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       deviceId: row.device_id,
       tenantId: row.tenant_id,
       tenantName: row.tenant_name,
-      type: row.alert_type,
+      type: row.alert_type || 'trap_triggered',
       severity: row.severity,
-      message: row.message,
+      message: row.message || 'Alert triggered',
       isAcknowledged: row.isAcknowledged,
       acknowledgedBy: row.acknowledged_by,
       acknowledgedAt: row.acknowledged_at,
       isResolved: row.isResolved,
       resolvedBy: row.resolved_by,
       resolvedAt: row.resolved_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      resolvedNotes: row.resolved_notes,
+      createdAt: row.created_at || row.triggered_at,
       macAddress: row.mac_address,
       location: row.location,
-      label: row.label,
+      deviceName: row.label || row.location,  // Use label as deviceName, fallback to location
     }));
 
     res.json({
@@ -181,26 +199,32 @@ router.post('/:id/acknowledge', validateUuid(), async (req: AuthRequest, res: Re
     const isMasterTenantAdmin = superadminCheck.rows.length > 0;
 
     // Build the query - superadmins can acknowledge any alert
-    let query = `
-      UPDATE device_alerts
-      SET alert_status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $2
-      WHERE id = $1 AND alert_status = 'active'
-    `;
-    const params: any[] = [id, userId];
+    let query: string;
+    let params: any[];
 
-    if (!isMasterTenantAdmin) {
+    if (isMasterTenantAdmin) {
       query = `
-        UPDATE device_alerts
-        SET alert_status = 'acknowledged', acknowledged_at = NOW(), acknowledged_by = $3
-        WHERE id = $1 AND tenant_id = $2 AND alert_status = 'active'
-      `;
-      params.push(tenantId);
-      params[1] = tenantId;
-      params[2] = userId;
+        UPDATE alerts
+        SET status = 'acknowledged',
+            acknowledged_at = NOW(),
+            acknowledged_by = $2,
+            updated_at = NOW()
+        WHERE id = $1 AND status = 'new'
+        RETURNING *`;
+      params = [id, userId];
+    } else {
+      query = `
+        UPDATE alerts
+        SET status = 'acknowledged',
+            acknowledged_at = NOW(),
+            acknowledged_by = $3,
+            updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2 AND status = 'new'
+        RETURNING *`;
+      params = [id, tenantId, userId];
     }
 
-    query += ' RETURNING *';
-    const result = await dbPool.query(query, isMasterTenantAdmin ? [id, userId] : [id, tenantId, userId]);
+    const result = await dbPool.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -234,26 +258,60 @@ router.post('/:id/acknowledge', validateUuid(), async (req: AuthRequest, res: Re
 });
 
 // POST /alerts/:id/resolve - Resolve an alert
-router.post('/:id/resolve', async (req: AuthRequest, res: Response) => {
+router.post('/:id/resolve', validateUuid(), async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { notes } = req.body;
     const tenantId = req.user!.tenantId;
     const userId = req.user!.userId;
 
-    const result = await dbPool.query(
-      `UPDATE alerts
-       SET status = 'resolved',
-           resolved_at = NOW(),
-           resolved_by = $3,
-           notes = $4,
-           acknowledged_by = NULL,
-           acknowledged_at = NULL,
-           updated_at = NOW()
-       WHERE id = $1 AND tenant_id = $2 AND status IN ('new', 'acknowledged')
-       RETURNING *`,
-      [id, tenantId, userId, notes || null]
+    // Check if user is a Master Tenant superadmin (can resolve any alert)
+    const MASTER_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+    const superadminCheck = await dbPool.query(
+      `SELECT 1 FROM user_tenant_memberships
+       WHERE user_id = $1 AND tenant_id = $2 AND role = 'superadmin'`,
+      [userId, MASTER_TENANT_ID]
     );
+    const isMasterTenantAdmin = superadminCheck.rows.length > 0;
+
+    // Build the query - superadmins can resolve any alert
+    let query: string;
+    let params: any[];
+
+    // Must clear acknowledged_at/acknowledged_by to satisfy ack_consistency constraint
+    if (isMasterTenantAdmin) {
+      query = `
+        UPDATE alerts
+        SET status = 'resolved',
+            resolved_at = NOW(),
+            resolved_by = $2,
+            notes = $3,
+            acknowledged_at = NULL,
+            acknowledged_by = NULL,
+            updated_at = NOW()
+        WHERE id = $1 AND status IN ('new', 'acknowledged')
+        RETURNING *, (
+          SELECT mqtt_client_id FROM devices WHERE id = alerts.device_id
+        ) as mac_address`;
+      params = [id, userId, notes || null];
+    } else {
+      query = `
+        UPDATE alerts
+        SET status = 'resolved',
+            resolved_at = NOW(),
+            resolved_by = $3,
+            notes = $4,
+            acknowledged_at = NULL,
+            acknowledged_by = NULL,
+            updated_at = NOW()
+        WHERE id = $1 AND tenant_id = $2 AND status IN ('new', 'acknowledged')
+        RETURNING *, (
+          SELECT mqtt_client_id FROM devices WHERE id = alerts.device_id
+        ) as mac_address`;
+      params = [id, tenantId, userId, notes || null];
+    }
+
+    const result = await dbPool.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -264,19 +322,16 @@ router.post('/:id/resolve', async (req: AuthRequest, res: Response) => {
 
     const alert = result.rows[0];
 
-    // Get device info and send MQTT command to clear alert on device
-    const deviceResult = await dbPool.query(
-      'SELECT mqtt_client_id FROM devices WHERE id = $1 AND tenant_id = $2',
-      [alert.device_id, tenantId]
-    );
+    // Send MQTT command to clear alert on device
+    const macAddress = alert.mac_address;
+    const alertTenantId = alert.tenant_id;
 
-    if (deviceResult.rows.length > 0) {
+    if (macAddress && alertTenantId) {
       const mqttService = (req.app as any).locals.mqttService;
-      const macAddress = deviceResult.rows[0].mqtt_client_id;
 
       try {
         await mqttService.publishDeviceCommand(
-          tenantId,
+          alertTenantId,
           macAddress,
           {
             command: 'alert_reset',

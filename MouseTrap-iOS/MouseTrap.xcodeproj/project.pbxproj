@@ -1,0 +1,699 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		05877FB74C724F31A320E8A2 /* OfflineWarningSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33E422EB771125BE89E1B2F3 /* OfflineWarningSection.swift */; };
+		57343EFF2C3EBDFF12214897 /* AlertHeroSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7B02525FCFD621397F8EF0E /* AlertHeroSection.swift */; };
+		6A23C32138D13BD5CBB8682B /* DeviceStatusList.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63CEA8617BDEF6D30CAF3AA1 /* DeviceStatusList.swift */; };
+		81A785F03F9F56316269D191 /* DeviceStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AD16872A91EB35CC142A4F /* DeviceStatusRow.swift */; };
+		A10000010000000000000001 /* MouseTrapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000001 /* MouseTrapApp.swift */; };
+		A10000010000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000002 /* AppDelegate.swift */; };
+		A10000010000000000000003 /* EmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000003 /* EmptyStateView.swift */; };
+		A10000010000000000000004 /* ErrorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000004 /* ErrorView.swift */; };
+		A10000010000000000000005 /* HapticFeedback.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000005 /* HapticFeedback.swift */; };
+		A10000010000000000000006 /* LoadingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000006 /* LoadingView.swift */; };
+		A10000010000000000000007 /* StatusBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000007 /* StatusBadge.swift */; };
+		A10000010000000000000008 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000008 /* AppConfig.swift */; };
+		A10000010000000000000009 /* Color+Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000009 /* Color+Theme.swift */; };
+		A10000010000000000000010 /* Date+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000010 /* Date+Extensions.swift */; };
+		A10000010000000000000011 /* View+Extensions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000011 /* View+Extensions.swift */; };
+		A10000010000000000000012 /* Alert.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000012 /* Alert.swift */; };
+		A10000010000000000000013 /* DashboardStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000013 /* DashboardStats.swift */; };
+		A10000010000000000000014 /* Device.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000014 /* Device.swift */; };
+		A10000010000000000000015 /* User.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000015 /* User.swift */; };
+		A10000010000000000000016 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000016 /* APIClient.swift */; };
+		A10000010000000000000017 /* APIEndpoints.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000017 /* APIEndpoints.swift */; };
+		A10000010000000000000018 /* APIError.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000018 /* APIError.swift */; };
+		A10000010000000000000019 /* SocketIOManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000019 /* SocketIOManager.swift */; };
+		A10000010000000000000020 /* WebSocketManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000020 /* WebSocketManager.swift */; };
+		A10000010000000000000021 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000021 /* KeychainService.swift */; };
+		A10000010000000000000022 /* AlertsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000022 /* AlertsViewModel.swift */; };
+		A10000010000000000000023 /* AlertsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000023 /* AlertsListView.swift */; };
+		A10000010000000000000024 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000024 /* LoginView.swift */; };
+		A10000010000000000000025 /* DashboardViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000025 /* DashboardViewModel.swift */; };
+		A10000010000000000000026 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000026 /* DashboardView.swift */; };
+		A10000010000000000000027 /* DeviceDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000027 /* DeviceDetailViewModel.swift */; };
+		A10000010000000000000028 /* DeviceListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000028 /* DeviceListViewModel.swift */; };
+		A10000010000000000000029 /* DeviceDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000029 /* DeviceDetailView.swift */; };
+		A10000010000000000000030 /* DeviceListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000030 /* DeviceListView.swift */; };
+		A10000010000000000000031 /* ChangePasswordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000031 /* ChangePasswordView.swift */; };
+		A10000010000000000000032 /* EmergencyContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000032 /* EmergencyContactsView.swift */; };
+		A10000010000000000000033 /* NotificationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000033 /* NotificationSettingsView.swift */; };
+		A10000010000000000000034 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000034 /* SettingsView.swift */; };
+		A10000010000000000000035 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000035 /* MainTabView.swift */; };
+		A10000010000000000000036 /* AlertService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000036 /* AlertService.swift */; };
+		A10000010000000000000037 /* AuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000037 /* AuthManager.swift */; };
+		A10000010000000000000038 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000038 /* AuthService.swift */; };
+		A10000010000000000000039 /* DashboardService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000039 /* DashboardService.swift */; };
+		A10000010000000000000040 /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000040 /* DeviceService.swift */; };
+		A10000010000000000000041 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000041 /* PushNotificationService.swift */; };
+		A10000010000000000000042 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000010000000000000042 /* Assets.xcassets */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		33E422EB771125BE89E1B2F3 /* OfflineWarningSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfflineWarningSection.swift; sourceTree = "<group>"; };
+		63CEA8617BDEF6D30CAF3AA1 /* DeviceStatusList.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeviceStatusList.swift; sourceTree = "<group>"; };
+		A20000010000000000000001 /* MouseTrapApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseTrapApp.swift; sourceTree = "<group>"; };
+		A20000010000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A20000010000000000000003 /* EmptyStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStateView.swift; sourceTree = "<group>"; };
+		A20000010000000000000004 /* ErrorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ErrorView.swift; sourceTree = "<group>"; };
+		A20000010000000000000005 /* HapticFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticFeedback.swift; sourceTree = "<group>"; };
+		A20000010000000000000006 /* LoadingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoadingView.swift; sourceTree = "<group>"; };
+		A20000010000000000000007 /* StatusBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusBadge.swift; sourceTree = "<group>"; };
+		A20000010000000000000008 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		A20000010000000000000009 /* Color+Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Theme.swift"; sourceTree = "<group>"; };
+		A20000010000000000000010 /* Date+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Date+Extensions.swift"; sourceTree = "<group>"; };
+		A20000010000000000000011 /* View+Extensions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "View+Extensions.swift"; sourceTree = "<group>"; };
+		A20000010000000000000012 /* Alert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Alert.swift; sourceTree = "<group>"; };
+		A20000010000000000000013 /* DashboardStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStats.swift; sourceTree = "<group>"; };
+		A20000010000000000000014 /* Device.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Device.swift; sourceTree = "<group>"; };
+		A20000010000000000000015 /* User.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = User.swift; sourceTree = "<group>"; };
+		A20000010000000000000016 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		A20000010000000000000017 /* APIEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIEndpoints.swift; sourceTree = "<group>"; };
+		A20000010000000000000018 /* APIError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIError.swift; sourceTree = "<group>"; };
+		A20000010000000000000019 /* SocketIOManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketIOManager.swift; sourceTree = "<group>"; };
+		A20000010000000000000020 /* WebSocketManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketManager.swift; sourceTree = "<group>"; };
+		A20000010000000000000021 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
+		A20000010000000000000022 /* AlertsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertsViewModel.swift; sourceTree = "<group>"; };
+		A20000010000000000000023 /* AlertsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertsListView.swift; sourceTree = "<group>"; };
+		A20000010000000000000024 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		A20000010000000000000025 /* DashboardViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardViewModel.swift; sourceTree = "<group>"; };
+		A20000010000000000000026 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		A20000010000000000000027 /* DeviceDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailViewModel.swift; sourceTree = "<group>"; };
+		A20000010000000000000028 /* DeviceListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListViewModel.swift; sourceTree = "<group>"; };
+		A20000010000000000000029 /* DeviceDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceDetailView.swift; sourceTree = "<group>"; };
+		A20000010000000000000030 /* DeviceListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceListView.swift; sourceTree = "<group>"; };
+		A20000010000000000000031 /* ChangePasswordView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangePasswordView.swift; sourceTree = "<group>"; };
+		A20000010000000000000032 /* EmergencyContactsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmergencyContactsView.swift; sourceTree = "<group>"; };
+		A20000010000000000000033 /* NotificationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSettingsView.swift; sourceTree = "<group>"; };
+		A20000010000000000000034 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A20000010000000000000035 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		A20000010000000000000036 /* AlertService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertService.swift; sourceTree = "<group>"; };
+		A20000010000000000000037 /* AuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManager.swift; sourceTree = "<group>"; };
+		A20000010000000000000038 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
+		A20000010000000000000039 /* DashboardService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardService.swift; sourceTree = "<group>"; };
+		A20000010000000000000040 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
+		A20000010000000000000041 /* PushNotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushNotificationService.swift; sourceTree = "<group>"; };
+		A20000010000000000000042 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A30000010000000000000001 /* MouseTrap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MouseTrap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A30000010000000000000002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C7B02525FCFD621397F8EF0E /* AlertHeroSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AlertHeroSection.swift; sourceTree = "<group>"; };
+		D7AD16872A91EB35CC142A4F /* DeviceStatusRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeviceStatusRow.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A40000010000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A50000010000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000002 /* MouseTrap */,
+				A50000010000000000000099 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A50000010000000000000002 /* MouseTrap */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000003 /* App */,
+				A50000010000000000000004 /* Components */,
+				A50000010000000000000005 /* Core */,
+				A50000010000000000000006 /* Features */,
+				A50000010000000000000007 /* Navigation */,
+				A50000010000000000000008 /* Services */,
+				A20000010000000000000042 /* Assets.xcassets */,
+				A30000010000000000000002 /* Info.plist */,
+			);
+			path = MouseTrap;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000001 /* MouseTrapApp.swift */,
+				A20000010000000000000002 /* AppDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000004 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000003 /* EmptyStateView.swift */,
+				A20000010000000000000004 /* ErrorView.swift */,
+				A20000010000000000000005 /* HapticFeedback.swift */,
+				A20000010000000000000006 /* LoadingView.swift */,
+				A20000010000000000000007 /* StatusBadge.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000005 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000008 /* AppConfig.swift */,
+				A50000010000000000000009 /* Extensions */,
+				A50000010000000000000010 /* Models */,
+				A50000010000000000000011 /* Network */,
+				A50000010000000000000012 /* Storage */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000006 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000013 /* Alerts */,
+				A50000010000000000000014 /* Authentication */,
+				A50000010000000000000015 /* Dashboard */,
+				A50000010000000000000016 /* Devices */,
+				A50000010000000000000017 /* Settings */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000007 /* Navigation */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000035 /* MainTabView.swift */,
+			);
+			path = Navigation;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000008 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000036 /* AlertService.swift */,
+				A20000010000000000000037 /* AuthManager.swift */,
+				A20000010000000000000038 /* AuthService.swift */,
+				A20000010000000000000039 /* DashboardService.swift */,
+				A20000010000000000000040 /* DeviceService.swift */,
+				A20000010000000000000041 /* PushNotificationService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000009 /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000009 /* Color+Theme.swift */,
+				A20000010000000000000010 /* Date+Extensions.swift */,
+				A20000010000000000000011 /* View+Extensions.swift */,
+			);
+			path = Extensions;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000010 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000012 /* Alert.swift */,
+				A20000010000000000000013 /* DashboardStats.swift */,
+				A20000010000000000000014 /* Device.swift */,
+				A20000010000000000000015 /* User.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000011 /* Network */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000016 /* APIClient.swift */,
+				A20000010000000000000017 /* APIEndpoints.swift */,
+				A20000010000000000000018 /* APIError.swift */,
+				A20000010000000000000019 /* SocketIOManager.swift */,
+				A20000010000000000000020 /* WebSocketManager.swift */,
+			);
+			path = Network;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000012 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000021 /* KeychainService.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000013 /* Alerts */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000018 /* ViewModels */,
+				A50000010000000000000019 /* Views */,
+			);
+			path = Alerts;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000014 /* Authentication */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000020 /* Views */,
+			);
+			path = Authentication;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000015 /* Dashboard */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000021 /* ViewModels */,
+				A50000010000000000000022 /* Views */,
+			);
+			path = Dashboard;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000016 /* Devices */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000023 /* ViewModels */,
+				A50000010000000000000024 /* Views */,
+			);
+			path = Devices;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000017 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				A50000010000000000000025 /* Views */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000018 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000022 /* AlertsViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000019 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000023 /* AlertsListView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000020 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000024 /* LoginView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000021 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000025 /* DashboardViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000022 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000026 /* DashboardView.swift */,
+				C7B02525FCFD621397F8EF0E /* AlertHeroSection.swift */,
+				33E422EB771125BE89E1B2F3 /* OfflineWarningSection.swift */,
+				63CEA8617BDEF6D30CAF3AA1 /* DeviceStatusList.swift */,
+				D7AD16872A91EB35CC142A4F /* DeviceStatusRow.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000023 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000027 /* DeviceDetailViewModel.swift */,
+				A20000010000000000000028 /* DeviceListViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000024 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000029 /* DeviceDetailView.swift */,
+				A20000010000000000000030 /* DeviceListView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000025 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A20000010000000000000031 /* ChangePasswordView.swift */,
+				A20000010000000000000032 /* EmergencyContactsView.swift */,
+				A20000010000000000000033 /* NotificationSettingsView.swift */,
+				A20000010000000000000034 /* SettingsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A50000010000000000000099 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A30000010000000000000001 /* MouseTrap.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A60000010000000000000001 /* MouseTrap */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A70000010000000000000001 /* Build configuration list for PBXNativeTarget "MouseTrap" */;
+			buildPhases = (
+				A80000010000000000000001 /* Sources */,
+				A40000010000000000000001 /* Frameworks */,
+				A90000010000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MouseTrap;
+			productName = MouseTrap;
+			productReference = A30000010000000000000001 /* MouseTrap.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA0000010000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					A60000010000000000000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AB0000010000000000000001 /* Build configuration list for PBXProject "MouseTrap" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A50000010000000000000001;
+			productRefGroup = A50000010000000000000099 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A60000010000000000000001 /* MouseTrap */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A90000010000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000042 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A80000010000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000010000000000000001 /* MouseTrapApp.swift in Sources */,
+				A10000010000000000000002 /* AppDelegate.swift in Sources */,
+				A10000010000000000000003 /* EmptyStateView.swift in Sources */,
+				A10000010000000000000004 /* ErrorView.swift in Sources */,
+				A10000010000000000000005 /* HapticFeedback.swift in Sources */,
+				A10000010000000000000006 /* LoadingView.swift in Sources */,
+				A10000010000000000000007 /* StatusBadge.swift in Sources */,
+				A10000010000000000000008 /* AppConfig.swift in Sources */,
+				A10000010000000000000009 /* Color+Theme.swift in Sources */,
+				A10000010000000000000010 /* Date+Extensions.swift in Sources */,
+				A10000010000000000000011 /* View+Extensions.swift in Sources */,
+				A10000010000000000000012 /* Alert.swift in Sources */,
+				A10000010000000000000013 /* DashboardStats.swift in Sources */,
+				A10000010000000000000014 /* Device.swift in Sources */,
+				A10000010000000000000015 /* User.swift in Sources */,
+				A10000010000000000000016 /* APIClient.swift in Sources */,
+				A10000010000000000000017 /* APIEndpoints.swift in Sources */,
+				A10000010000000000000018 /* APIError.swift in Sources */,
+				A10000010000000000000019 /* SocketIOManager.swift in Sources */,
+				A10000010000000000000020 /* WebSocketManager.swift in Sources */,
+				A10000010000000000000021 /* KeychainService.swift in Sources */,
+				A10000010000000000000022 /* AlertsViewModel.swift in Sources */,
+				A10000010000000000000023 /* AlertsListView.swift in Sources */,
+				A10000010000000000000024 /* LoginView.swift in Sources */,
+				A10000010000000000000025 /* DashboardViewModel.swift in Sources */,
+				A10000010000000000000026 /* DashboardView.swift in Sources */,
+				A10000010000000000000027 /* DeviceDetailViewModel.swift in Sources */,
+				A10000010000000000000028 /* DeviceListViewModel.swift in Sources */,
+				A10000010000000000000029 /* DeviceDetailView.swift in Sources */,
+				A10000010000000000000030 /* DeviceListView.swift in Sources */,
+				A10000010000000000000031 /* ChangePasswordView.swift in Sources */,
+				A10000010000000000000032 /* EmergencyContactsView.swift in Sources */,
+				A10000010000000000000033 /* NotificationSettingsView.swift in Sources */,
+				A10000010000000000000034 /* SettingsView.swift in Sources */,
+				A10000010000000000000035 /* MainTabView.swift in Sources */,
+				A10000010000000000000036 /* AlertService.swift in Sources */,
+				A10000010000000000000037 /* AuthManager.swift in Sources */,
+				A10000010000000000000038 /* AuthService.swift in Sources */,
+				A10000010000000000000039 /* DashboardService.swift in Sources */,
+				A10000010000000000000040 /* DeviceService.swift in Sources */,
+				A10000010000000000000041 /* PushNotificationService.swift in Sources */,
+				57343EFF2C3EBDFF12214897 /* AlertHeroSection.swift in Sources */,
+				05877FB74C724F31A320E8A2 /* OfflineWarningSection.swift in Sources */,
+				6A23C32138D13BD5CBB8682B /* DeviceStatusList.swift in Sources */,
+				81A785F03F9F56316269D191 /* DeviceStatusRow.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AC0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AC0000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AD0000010000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SVW57P4S75;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MouseTrap/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = MouseTrap;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mousetrap.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AD0000010000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SVW57P4S75;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MouseTrap/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = MouseTrap;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mousetrap.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A70000010000000000000001 /* Build configuration list for PBXNativeTarget "MouseTrap" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000010000000000000001 /* Debug */,
+				AD0000010000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AB0000010000000000000001 /* Build configuration list for PBXProject "MouseTrap" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC0000010000000000000001 /* Debug */,
+				AC0000010000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AA0000010000000000000001 /* Project object */;
+}

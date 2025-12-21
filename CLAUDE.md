@@ -1,5 +1,11 @@
 # MouseTrap Project - Claude Code Instructions
 
+## Quick Directives
+
+| Directive | Meaning |
+|-----------|---------|
+| `pics` | Look at the most recent image files on Desktop to see screenshots of the current issue(s) |
+
 ## FIRST STEP FOR EVERY SESSION
 
 **Before doing any work, read `/Users/wadehargrove/Documents/MouseTrap/Server/HANDOFF.md`**
