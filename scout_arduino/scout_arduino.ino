@@ -4,7 +4,7 @@
  * Entry point monitoring with AI-powered rodent detection.
  * Detects motion, filters by size, and sends images to server for classification.
  *
- * Hardware: ESP32-S3-CAM (same as trap device)
+ * Hardware: XIAO ESP32-S3 Sense (Seeed Studio)
  * Features:
  *   - Camera-based motion detection
  *   - On-device size filtering (reject people/pets)
@@ -935,7 +935,7 @@ bool claimDevice(const String& claimCode) {
   JsonDocument doc;
   doc["claimCode"] = claimCode;
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "ESP32-S3-CAM";
+  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
   deviceInfo["macAddress"] = getMacAddress();
   deviceInfo["firmwareVersion"] = FIRMWARE_VERSION;
   deviceInfo["filesystemVersion"] = FILESYSTEM_VERSION;
@@ -1073,7 +1073,7 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
 
   // Add device info
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "ESP32-S3-CAM";
+  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
   deviceInfo["firmwareVersion"] = currentFirmwareVersion;
   deviceInfo["filesystemVersion"] = currentFilesystemVersion;
 

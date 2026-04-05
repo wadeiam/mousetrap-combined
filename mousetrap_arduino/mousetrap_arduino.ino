@@ -1,8 +1,8 @@
 /*
    MouseTrapToF-Cam.ino
-   Consolidated sketch for an ESP32‑CAM based mouse trap system.
+   Consolidated sketch for an ESP32-S3 based mouse trap system.
    Uses:
-     • OV2640 camera (AI‑Thinker model) to serve still images on /camera.
+     • OV2640 camera (XIAO ESP32-S3 Sense) to serve still images on /camera.
      • VL6180X sensor on I2C2 (SDA=GPIO14, SCL=GPIO15) – if connected.
      • Onboard LED (LOW turns the LED off, HIGH turns it on) on GPIO4 for status indication.
      • Buzzer on GPIO41 for alert tones (if connected).
@@ -90,6 +90,8 @@ constexpr int CAPTURE_DIR_LEN = sizeof(CAPTURE_DIR) - 1;
 #include <time.h>
 #include <Preferences.h>
 #include <functional>
+#define CAMERA_MODEL_XIAO_ESP32S3
+#include "camera_pins.h"
 #include "esp_camera.h"
 #include <stdlib.h>
 #include <vector>
@@ -1483,7 +1485,7 @@ bool claimDevice(const String& claimCode) {
   JsonDocument doc;
   doc["claimCode"] = claimCode;
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "ESP32-CAM-V1.0";
+  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
   deviceInfo["macAddress"] = g_macUpper;
   deviceInfo["firmwareVersion"] = currentFirmwareVersion;
   deviceInfo["filesystemVersion"] = currentFilesystemVersion;
@@ -1976,7 +1978,7 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
 
   // Add device info
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "ESP32-CAM-V1.0";
+  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
   deviceInfo["firmwareVersion"] = currentFirmwareVersion;
   deviceInfo["filesystemVersion"] = currentFilesystemVersion;
 
@@ -5487,22 +5489,23 @@ void initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = 11;
-  config.pin_d1 = 9;
-  config.pin_d2 = 8;
-  config.pin_d3 = 10;
-  config.pin_d4 = 12;
-  config.pin_d5 = 18;
-  config.pin_d6 = 17;
-  config.pin_d7 = 16;
-  config.pin_xclk = 15;  // For ESP32-S3-CAM, XCLK is typically on GPIO15 (adjust if needed)
-  config.pin_pclk = 13;
-  config.pin_vsync = 6;
-  config.pin_href = 7;
-  config.pin_sccb_sda = 4;
-  config.pin_sccb_scl = 5;
-  config.pin_pwdn = -1;  // Not used on ESP32-S3-CAM
-  config.pin_reset = -1;
+  // Use pin definitions from camera_pins.h
+  config.pin_d0 = Y2_GPIO_NUM;
+  config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM;
+  config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM;
+  config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM;
+  config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM;
+  config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
 
   if (psramFound()) {

@@ -2,7 +2,7 @@
 # Based on mousetrap_arduino Makefile
 
 # Board FQBN - ESP32-S3 with 16MB flash, OPI PSRAM
-FQBN = esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=921600,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
+FQBN = esp32:esp32:esp32s3:FlashSize=8M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=921600,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
 
 # Auto-detect port
 PORT = $(shell arduino-cli board list | grep -i "esp32\|usbserial\|usbmodem" | awk '{print $$1}' | head -n 1)
@@ -14,7 +14,7 @@ SKETCH = .
 MONITOR_BAUD = 115200
 
 # LittleFS partition offset (must match partitions.csv)
-LITTLEFS_OFFSET = 0x510000
+LITTLEFS_OFFSET = 0x410000
 LITTLEFS_BIN = build/littlefs.bin
 
 # esptool path
@@ -40,7 +40,7 @@ help:
 	@echo "  make deploy-all   - Build and upload firmware + LittleFS"
 	@echo ""
 	@echo "Board Configuration:"
-	@echo "  - ESP32-S3, 16MB Flash, OPI PSRAM"
+	@echo "  - XIAO ESP32-S3 Sense, 8MB Flash, OPI PSRAM"
 	@echo "  - LittleFS offset: $(LITTLEFS_OFFSET)"
 	@echo ""
 

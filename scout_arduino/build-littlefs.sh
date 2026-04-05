@@ -11,8 +11,9 @@ STAGING_DIR="$SCRIPT_DIR/build/staging"
 OUTPUT_DIR="$SCRIPT_DIR/build"
 OUTPUT_FILE="$OUTPUT_DIR/littlefs.bin"
 
-# LittleFS partition size from partitions.csv (0xAE0000 = 11403264 bytes)
-FS_SIZE=10833000
+# LittleFS partition size from partitions.csv (0x3E0000 = 4063232 bytes)
+# Use 95% of partition size to leave room for wear leveling overhead
+FS_SIZE=3860000
 BLOCK_SIZE=4096
 PAGE_SIZE=256
 

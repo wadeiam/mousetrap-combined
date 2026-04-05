@@ -52,15 +52,15 @@ git branch -D xiao-migration
 ## Migration Checklist
 
 ### Phase 1: Partition Table & Build System
-- [ ] Design 8MB partition layout (firmware + LittleFS/SPIFFS)
-- [ ] Update `partitions.csv` for 8MB flash
-- [ ] Update Makefile FQBN for XIAO board variant
-- [ ] Verify `CAMERA_MODEL_XIAO_ESP32S3` pin definitions are correct
+- [x] Design 8MB partition layout (firmware + LittleFS/SPIFFS)
+- [x] Update `partitions.csv` for 8MB flash
+- [x] Update Makefile FQBN for XIAO board variant
+- [x] Verify `CAMERA_MODEL_XIAO_ESP32S3` pin definitions are correct
 - [ ] Test basic compilation with new board settings
 
 ### Phase 2: Firmware Adaptation
-- [ ] Update `#define` board selection in firmware
-- [ ] Adjust any hardcoded flash size references
+- [x] Update `#define` board selection in firmware
+- [x] Adjust any hardcoded flash size references
 - [ ] Test camera initialization with onboard OV2640
 - [ ] Verify WiFi connectivity
 - [ ] Test MQTT communication with server
