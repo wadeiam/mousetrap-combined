@@ -1,0 +1,140 @@
+ERC report (2025-10-10T22:37:46-0700, Encoding UTF8)
+
+***** Sheet /
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(5050 mils, 800 mils): Symbol U2 Pin 20 [3v3, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 900 mils): Symbol U2 Pin 19 [RST, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(5050 mils, 900 mils): Symbol U2 Pin 19 [RST, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1000 mils): Symbol U2 Pin 18 [GPIO5_/_CAM_SIOD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1100 mils): Symbol U2 Pin 17 [GPIO5_/_CAM_SIOC, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1200 mils): Symbol U2 Pin 16 [GPIO6_/_CAM_VYSNC, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1300 mils): Symbol U2 Pin 15 [GPIO7_/_CAM_HREF, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1400 mils): Symbol U2 Pin 14 [GPIO15_/_CAM_XCLK, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1500 mils): Symbol U2 Pin 13 [GPIO16_/_CAM_Y9, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1600 mils): Symbol U2 Pin 12 [GPIO17_/_CAM_Y8, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1700 mils): Symbol U2 Pin 11 [GPIO18_/_CAM_Y7, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1800 mils): Symbol U2 Pin 10 [GPIO8_/_CAM_Y4, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(5050 mils, 1800 mils): Symbol U2 Pin 10 [GPIO8_/_CAM_Y4, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 1900 mils): Symbol U2 Pin 9 [GPIO3_/_JTAG_EN, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2000 mils): Symbol U2 Pin 8 [GPIO46_/_LOG, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(5050 mils, 2000 mils): Symbol U2 Pin 8 [GPIO46_/_LOG, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2100 mils): Symbol U2 Pin 7 [GPIO9_/_CAM_Y3, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2200 mils): Symbol U2 Pin 6 [GPIO10_/_CAM_Y5, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2300 mils): Symbol U2 Pin 5 [GPIO11_/_CAM_Y2, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2400 mils): Symbol U2 Pin 4 [GPIO12_/_CAM_Y6, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2500 mils): Symbol U2 Pin 3 [GPIO13_/_CAM_Y5, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5050 mils, 2600 mils): Symbol U2 Pin 2 [GPIO14, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 800 mils): Symbol U2 Pin 40 [GPIO43_/_U0TXD, Output, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 900 mils): Symbol U2 Pin 39 [GPIO44_/_U0RXD, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(5650 mils, 900 mils): Symbol U2 Pin 39 [GPIO44_/_U0RXD, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1200 mils): Symbol U2 Pin 36 [GPIO42, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1400 mils): Symbol U2 Pin 34 [GPIO40_/_SD_DATA, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1500 mils): Symbol U2 Pin 33 [GPIO39_/_SD_CLK, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1600 mils): Symbol U2 Pin 32 [GPIO38_/_SD_CMD, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1700 mils): Symbol U2 Pin 31 [GPIO37_/_PSRAM, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1800 mils): Symbol U2 Pin 30 [GPIO36_/_PSRAM, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 1900 mils): Symbol U2 Pin 29 [GPIO35_/_PSRAM, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 2000 mils): Symbol U2 Pin 28 [GPIO0_/_Boot, Input, Line]
+[pin_not_driven]: Input pin not driven by any Output pins
+    ; error
+    @(5650 mils, 2000 mils): Symbol U2 Pin 28 [GPIO0_/_Boot, Input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 2100 mils): Symbol U2 Pin 27 [GPIO45_/_VSPI, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5650 mils, 2200 mils): Symbol U2 Pin 26 [GPIO48_/_WS2812, Bidirectional, Line]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(3700 mils, 5300 mils): Symbol U4 Pin 3 [VIN, Power input, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5600 mils, 4000 mils): Symbol J2 Pin 5 [Pin_5, Passive, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(5700 mils, 4000 mils): Symbol J2 Pin 6 [Pin_6, Passive, Line]
+[unconnected_wire_endpoint]: Unconnected wire endpoint
+    ; warning
+    @(3700 mils, 6500 mils): Vertical Wire, length 50 mils
+[pin_not_connected]: Pin not connected
+    ; error
+    @(6000 mils, 5450 mils): Symbol J1 Pin A8 [SBU1, Bidirectional, Line]
+[pin_not_connected]: Pin not connected
+    ; error
+    @(6100 mils, 5450 mils): Symbol J1 Pin B8 [SBU2, Bidirectional, Line]
+[lib_symbol_mismatch]: Symbol 'Buzzer_5mm_pin_pitch_12mm_diameter_14mm_height' doesn't match copy in library 'ESP32-S3-CAM_Module'
+    ; warning
+    @(8450 mils, 2350 mils): Symbol BZ1 [Buzzer_5mm_pin_pitch_12mm_diameter...]
+[lib_symbol_mismatch]: Symbol 'LED' doesn't match copy in library 'Device'
+    ; warning
+    @(9900 mils, 1300 mils): Symbol D2 [LED]
+[power_pin_not_driven]: Input Power pin not driven by any Output Power pins
+    ; error
+    @(9900 mils, 1400 mils): Symbol #PWR01 Pin 1 [Power input, Line]
+
+ ** ERC messages: 45  Errors 42  Warnings 3

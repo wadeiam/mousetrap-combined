@@ -1,0 +1,211 @@
+{
+    "$schema": "https://schemas.kicad.org/drc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2025-10-13T00:43:12-0700",
+    "kicad_version": "9.0.4",
+    "schematic_parity": [],
+    "source": "MouseTrapToF-Cam1.1.kicad_pcb",
+    "unconnected_items": [
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [+5V] on F.Cu, length 1.0000 mm",
+                    "pos": {
+                        "x": 125.955,
+                        "y": 65.05
+                    },
+                    "uuid": "e11dfd5d-e70e-48d9-acc9-4f816a5da1e2"
+                },
+                {
+                    "description": "Track [+5V] on F.Cu, length 1.2245 mm",
+                    "pos": {
+                        "x": 112.47266,
+                        "y": 61.151
+                    },
+                    "uuid": "19f0aebd-23f7-452c-b0c7-5d0df42bf3e8"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Pad 2 [Net-(U2-3v3)] of R9 on F.Cu",
+                    "pos": {
+                        "x": 106.59,
+                        "y": 54.75
+                    },
+                    "uuid": "5d53f2b6-6119-44a3-8171-a2012fbc7e65"
+                },
+                {
+                    "description": "Track [Net-(U2-3v3)] on F.Cu, length 7.2850 mm",
+                    "pos": {
+                        "x": 110.185,
+                        "y": 40.1
+                    },
+                    "uuid": "d9545909-dc51-497c-911b-18bbbaa94551"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Pad 4 [Net-(R7-Pad2)] of U3 on F.Cu",
+                    "pos": {
+                        "x": 118.0,
+                        "y": 70.525
+                    },
+                    "uuid": "f6df3c0f-04f2-438b-bfa0-2cd3dd3ca0d7"
+                },
+                {
+                    "description": "Pad 2 [Net-(R7-Pad2)] of R7 on F.Cu",
+                    "pos": {
+                        "x": 122.3,
+                        "y": 70.575
+                    },
+                    "uuid": "bb64db16-a179-4463-b0b9-b205c46c77e4"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Pad 1 [Net-(U2-GPIO20_{slash}_USB_D-)] of R7 on F.Cu",
+                    "pos": {
+                        "x": 122.3,
+                        "y": 72.225
+                    },
+                    "uuid": "ebf12673-ba10-453a-8a38-72d56d122629"
+                },
+                {
+                    "description": "PTH pad 23 [Net-(U2-GPIO20_{slash}_USB_D-)] of U2",
+                    "pos": {
+                        "x": 153.3,
+                        "y": 70.54
+                    },
+                    "uuid": "22e2eb60-6828-4066-863f-10ae502baa2a"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "PTH pad 28 [Net-(U2-GPIO0_{slash}_Boot)] of U2",
+                    "pos": {
+                        "x": 153.3,
+                        "y": 57.84
+                    },
+                    "uuid": "ff45a85c-8aad-4b36-8119-613209bfbcc8"
+                },
+                {
+                    "description": "Pad 1 [Net-(U2-GPIO0_{slash}_Boot)] of R_BOOT1 on F.Cu",
+                    "pos": {
+                        "x": 155.25,
+                        "y": 54.5
+                    },
+                    "uuid": "7247c32f-b1c1-4683-8dcb-3532f01da2f9"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        },
+        {
+            "description": "Missing connection between items",
+            "items": [
+                {
+                    "description": "Track [/BTN42] on F.Cu, length 1.6750 mm",
+                    "pos": {
+                        "x": 123.05,
+                        "y": 24.875
+                    },
+                    "uuid": "59338c54-9ede-4e07-aed4-9e5c8eaaf009"
+                },
+                {
+                    "description": "Track [/BTN42] on F.Cu, length 3.4000 mm",
+                    "pos": {
+                        "x": 161.275,
+                        "y": 37.5
+                    },
+                    "uuid": "b3dfed86-de55-4496-95ef-c99a62409c42"
+                }
+            ],
+            "severity": "error",
+            "type": "unconnected_items"
+        }
+    ],
+    "violations": [
+        {
+            "description": "Footprint 'VSON-10-1EP_3x3mm_P0.5mm_EP1.65x2.4mm_ThermalVias' does not match copy in library 'Package_SON'.",
+            "items": [
+                {
+                    "description": "Footprint U4",
+                    "pos": {
+                        "x": 124.48,
+                        "y": 65.05
+                    },
+                    "uuid": "d39db5c3-eea2-4380-a621-cbb87655a399"
+                }
+            ],
+            "severity": "warning",
+            "type": "lib_footprint_mismatch"
+        },
+        {
+            "description": "Thermal relief connection to zone incomplete (layer B.Cu; zone min spoke count 2; actual 1)",
+            "items": [
+                {
+                    "description": "Zone 'Q2D2B.cu' [GND] on B.Cu, priority 0",
+                    "pos": {
+                        "x": 168.49089,
+                        "y": 80.798082
+                    },
+                    "uuid": "dd399dfc-9dda-435c-8407-cab5981009f3"
+                },
+                {
+                    "description": "PTH pad 11 [GND] of U4",
+                    "pos": {
+                        "x": 124.96,
+                        "y": 65.91
+                    },
+                    "uuid": "a6ddbe11-43b5-48f4-8d4b-4620a60d30e2"
+                }
+            ],
+            "severity": "error",
+            "type": "starved_thermal"
+        },
+        {
+            "description": "Thermal relief connection to zone incomplete (layer B.Cu; zone min spoke count 2; actual 1)",
+            "items": [
+                {
+                    "description": "Zone 'Q2D2B.cu' [GND] on B.Cu, priority 0",
+                    "pos": {
+                        "x": 168.49089,
+                        "y": 80.798082
+                    },
+                    "uuid": "dd399dfc-9dda-435c-8407-cab5981009f3"
+                },
+                {
+                    "description": "PTH pad 11 [GND] of U4",
+                    "pos": {
+                        "x": 124.96,
+                        "y": 65.91
+                    },
+                    "uuid": "a6ddbe11-43b5-48f4-8d4b-4620a60d30e2"
+                }
+            ],
+            "severity": "error",
+            "type": "starved_thermal"
+        }
+    ]
+}

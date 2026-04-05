@@ -1,0 +1,106 @@
+{
+    "$schema": "https://schemas.kicad.org/erc.v1.json",
+    "coordinate_units": "mils",
+    "date": "2025-10-11T11:48:10-0700",
+    "kicad_version": "9.0.4",
+    "sheets": [
+        {
+            "path": "/",
+            "uuid_path": "/05f7f8a7-d939-44ac-a6d3-4bf97170d91c",
+            "violations": [
+                {
+                    "description": "Pins of type Power output and Power output are connected",
+                    "items": [
+                        {
+                            "description": "Symbol #FLG01 Pin 1 [Power output, Line]",
+                            "pos": {
+                                "x": 104.0,
+                                "y": 19.5
+                            },
+                            "uuid": "1525de9a-3440-4ff7-a0ec-814d703e6d60"
+                        },
+                        {
+                            "description": "Symbol U4 Pin 6 [OUT, Power output, Line]",
+                            "pos": {
+                                "x": 35.0,
+                                "y": 57.0
+                            },
+                            "uuid": "ce1c13f6-4b35-4303-91f2-38bfc3f481b8"
+                        }
+                    ],
+                    "severity": "error",
+                    "type": "pin_to_pin"
+                },
+                {
+                    "description": "Symbol 'Buzzer_5mm_pin_pitch_12mm_diameter_14mm_height' doesn't match copy in library 'ESP32-S3-CAM_Module'",
+                    "items": [
+                        {
+                            "description": "Symbol BZ1 [Buzzer_5mm_pin_pitch_12mm_diameter...]",
+                            "pos": {
+                                "x": 84.5,
+                                "y": 23.5
+                            },
+                            "uuid": "c32816ca-bdfb-46f6-ab46-d1d6cb4c69bd"
+                        }
+                    ],
+                    "severity": "warning",
+                    "type": "lib_symbol_mismatch"
+                },
+                {
+                    "description": "Symbol 'LED' doesn't match copy in library 'Device'",
+                    "items": [
+                        {
+                            "description": "Symbol D2 [LED]",
+                            "pos": {
+                                "x": 99.0,
+                                "y": 13.0
+                            },
+                            "uuid": "198c5a70-1ff7-4361-bcf4-668bbfff0ef5"
+                        }
+                    ],
+                    "severity": "warning",
+                    "type": "lib_symbol_mismatch"
+                },
+                {
+                    "description": "Input Power pin not driven by any Output Power pins",
+                    "items": [
+                        {
+                            "description": "Symbol #PWR01 Pin 1 [Power input, Line]",
+                            "pos": {
+                                "x": 99.0,
+                                "y": 14.0
+                            },
+                            "uuid": "57e870f8-f146-4058-9aac-bb7a4ffa53e5"
+                        }
+                    ],
+                    "severity": "error",
+                    "type": "power_pin_not_driven"
+                },
+                {
+                    "description": "Pins of type Power output and Power output are connected",
+                    "items": [
+                        {
+                            "description": "Symbol #FLG01 Pin 1 [Power output, Line]",
+                            "pos": {
+                                "x": 104.0,
+                                "y": 19.5
+                            },
+                            "uuid": "1525de9a-3440-4ff7-a0ec-814d703e6d60"
+                        },
+                        {
+                            "description": "Symbol U4 Pin 6 [OUT, Power output, Line]",
+                            "pos": {
+                                "x": 35.0,
+                                "y": 57.0
+                            },
+                            "uuid": "ce1c13f6-4b35-4303-91f2-38bfc3f481b8"
+                        }
+                    ],
+                    "severity": "error",
+                    "type": "pin_to_pin"
+                }
+            ]
+        }
+    ],
+    "source": "MouseTrapToF-Cam1.1.kicad_sch"
+}

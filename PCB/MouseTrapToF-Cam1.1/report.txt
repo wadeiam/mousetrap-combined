@@ -1,0 +1,6 @@
+Front (top side) placement file: 'C:\Users\wadeiam\Documents\@IoT\MouseTrapToF-Cam1.1\PCB\MouseTrapToF-Cam1.1\Gerbers\MouseTrapToF-Cam1.1-top.pos'.
+Info: Component count: 32.
+Back (bottom side) placement file: 'C:\Users\wadeiam\Documents\@IoT\MouseTrapToF-Cam1.1\PCB\MouseTrapToF-Cam1.1\Gerbers\MouseTrapToF-Cam1.1-bottom.pos'.
+Info: Component count: 2.
+Info: Full component count: 34.
+Info: Done.
