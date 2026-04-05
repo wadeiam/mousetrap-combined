@@ -8,6 +8,8 @@ import Combine
 @MainActor
 class WebSocketManager: ObservableObject {
     @Published var isConnected = false
+    @Published var serverUnreachable = false
+    @Published var lastConnectionAttempt: Date?
     @Published var lastDeviceUpdate: DeviceStatusEvent?
     @Published var lastAlert: AlertEvent?
     @Published var lastSnapshot: SnapshotEvent?
@@ -15,14 +17,21 @@ class WebSocketManager: ObservableObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private var pingTimer: Timer?
     private var reconnectAttempts = 0
-    private let maxReconnectAttempts = 5
+    private let initialReconnectAttempts = 5  // Fast reconnects initially
     private var pendingTenantId: String?
     private var handshakeComplete = false
     private var serverPingInterval: TimeInterval = 25.0
+    private var isConnecting = false
 
-    private let baseURL = "ws://192.168.133.110:4000"
+    private let baseURL = "ws://10.0.0.220:4000"
 
     func connect(tenantId: String) {
+        // Guard against redundant connect calls
+        if isConnecting || (isConnected && pendingTenantId == tenantId) {
+            print("[WebSocket] Already connecting/connected to tenant: \(tenantId)")
+            return
+        }
+
         disconnect() // Clean up any existing connection first
 
         guard let url = URL(string: "\(baseURL)/socket.io/?EIO=4&transport=websocket") else {
@@ -30,6 +39,7 @@ class WebSocketManager: ObservableObject {
             return
         }
 
+        isConnecting = true
         pendingTenantId = tenantId
         handshakeComplete = false
 
@@ -59,6 +69,7 @@ class WebSocketManager: ObservableObject {
         webSocketTask = nil
 
         isConnected = false
+        isConnecting = false
         handshakeComplete = false
         pendingTenantId = nil
         print("[WebSocket] Disconnected")
@@ -100,14 +111,20 @@ class WebSocketManager: ObservableObject {
         // Socket.IO message format: "42[\"eventName\",{...data...}]"
         // Engine.IO codes: 0=open, 2=ping, 3=pong, 4=message, 40=connect, 42=event
 
+        // Debug: log message type (first few chars only to avoid flooding logs with large payloads)
+        let preview = text.count > 50 ? String(text.prefix(50)) + "..." : text
+        if !text.hasPrefix("42[\"device:status\"") && text != "2" && text != "3" {
+            print("[WebSocket] Received: \(preview)")
+        }
+
         if text.hasPrefix("0{") || text == "0" {
             // Engine.IO open packet - parse handshake data
             handleEngineIOOpen(text)
             return
         }
 
-        if text == "40" {
-            // Socket.IO connect acknowledgment
+        if text.hasPrefix("40") {
+            // Socket.IO connect acknowledgment (may include namespace data like "40{"sid":"..."}")
             print("[WebSocket] Socket.IO connected")
             completeHandshake()
             return
@@ -224,14 +241,18 @@ class WebSocketManager: ObservableObject {
             }
         }
 
-        // After Engine.IO open, Socket.IO will send "40" (connect)
-        // We wait for that before considering the connection complete
+        // After Engine.IO open, client must send "40" to connect to Socket.IO namespace
+        // The server will respond with "40" to confirm the connection
+        sendMessage("40")
     }
 
     private func completeHandshake() {
         guard !handshakeComplete else { return }
         handshakeComplete = true
+        isConnecting = false
         isConnected = true
+        serverUnreachable = false
+        reconnectAttempts = 0
 
         // Join tenant room
         if let tenantId = pendingTenantId {
@@ -254,27 +275,37 @@ class WebSocketManager: ObservableObject {
 
     private func handleDisconnection() {
         isConnected = false
+        isConnecting = false
         handshakeComplete = false
         pingTimer?.invalidate()
         pingTimer = nil
 
-        // Attempt reconnection
-        if reconnectAttempts < maxReconnectAttempts {
-            reconnectAttempts += 1
-            let delay = Double(reconnectAttempts * 2)
-            print("[WebSocket] Reconnecting in \(delay)s (attempt \(reconnectAttempts))")
+        reconnectAttempts += 1
+        lastConnectionAttempt = Date()
 
-            let tenantToReconnect = pendingTenantId ?? KeychainService.shared.getCurrentTenantId()
+        // Mark server as unreachable after initial fast attempts
+        if reconnectAttempts > initialReconnectAttempts {
+            serverUnreachable = true
+        }
 
-            Task {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                if let tenantId = tenantToReconnect {
-                    connect(tenantId: tenantId)
-                }
-            }
+        // Calculate delay with exponential backoff, max 60 seconds
+        let delay: Double
+        if reconnectAttempts <= initialReconnectAttempts {
+            delay = Double(reconnectAttempts * 2)  // 2, 4, 6, 8, 10 seconds
         } else {
-            print("[WebSocket] Max reconnection attempts reached")
-            pendingTenantId = nil
+            // Exponential backoff: 15, 30, 60, 60, 60...
+            delay = min(60.0, Double(15 * (1 << (reconnectAttempts - initialReconnectAttempts - 1))))
+        }
+
+        print("[WebSocket] Reconnecting in \(delay)s (attempt \(reconnectAttempts))")
+
+        let tenantToReconnect = pendingTenantId ?? KeychainService.shared.getCurrentTenantId()
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if let tenantId = tenantToReconnect {
+                connect(tenantId: tenantId)
+            }
         }
     }
 }

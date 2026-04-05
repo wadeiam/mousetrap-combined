@@ -3,7 +3,7 @@
 
 # Board FQBN (Fully Qualified Board Name) matching your Windows settings
 # Note: Custom partition scheme uses partitions.csv in the sketch directory
-FQBN = esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=921600,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
+FQBN = esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=115200,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
 
 # Auto-detect port (finds first ESP32 device)
 PORT = $(shell arduino-cli board list | grep -i "esp32\|usbserial\|usbmodem" | awk '{print $$1}' | head -n 1)
@@ -46,7 +46,7 @@ help:
 	@echo "  - ESP32S3 Dev Module"
 	@echo "  - 16MB Flash, OPI PSRAM"
 	@echo "  - Custom partition (OTA + LittleFS)"
-	@echo "  - 240MHz CPU, 921600 upload speed"
+	@echo "  - 240MHz CPU, 115200 upload speed"
 	@echo "  - LittleFS offset: $(LITTLEFS_OFFSET) (from partitions.csv)"
 	@echo ""
 

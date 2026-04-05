@@ -135,4 +135,32 @@ class DeviceService {
 
         return response.alertId ?? ""
     }
+
+    // MARK: - Mute Offline Alerts
+
+    /// Mute or unmute offline alerts for a device
+    /// - Parameters:
+    ///   - deviceId: The device ID
+    ///   - muted: Whether to mute (true) or unmute (false)
+    ///   - duration: Optional duration in hours (nil for permanent mute)
+    func setOfflineAlertsMuted(deviceId: String, muted: Bool, duration: Int? = nil) async throws -> String {
+        struct Request: Codable {
+            let muted: Bool
+            let duration: Int?
+        }
+
+        struct Response: Codable {
+            let success: Bool?
+            let message: String?
+            let muteUntil: String?
+            let mutePermanently: Bool?
+        }
+
+        let response: Response = try await apiClient.post(
+            endpoint: .muteOfflineAlerts(deviceId: deviceId),
+            body: Request(muted: muted, duration: duration)
+        )
+
+        return response.message ?? (muted ? "Offline alerts muted" : "Offline alerts unmuted")
+    }
 }

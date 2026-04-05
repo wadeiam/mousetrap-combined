@@ -12,6 +12,8 @@ class SocketIOManager: ObservableObject {
     static let shared = SocketIOManager()
 
     @Published var isConnected = false
+    @Published var serverUnreachable = false
+    @Published var lastConnectionAttempt: Date?
     @Published var lastDeviceUpdate: DeviceStatusEvent?
     @Published var lastAlert: AlertEvent?
     @Published var lastSnapshot: SnapshotEvent?
@@ -19,8 +21,10 @@ class SocketIOManager: ObservableObject {
     private var manager: SocketManager?
     private var socket: SocketIOClient?
     private var currentTenantId: String?
+    private var reconnectAttempts = 0
+    private let initialReconnectThreshold = 5
 
-    private let serverURL = "http://192.168.133.110:4000"
+    private let serverURL = "http://10.0.0.220:4000"
 
     private init() {}
 
@@ -66,6 +70,8 @@ class SocketIOManager: ObservableObject {
         socket.on(clientEvent: .connect) { [weak self] _, _ in
             Task { @MainActor in
                 self?.isConnected = true
+                self?.serverUnreachable = false
+                self?.reconnectAttempts = 0
                 print("[SocketIO] Connected")
 
                 // Join tenant room
@@ -78,12 +84,41 @@ class SocketIOManager: ObservableObject {
         socket.on(clientEvent: .disconnect) { [weak self] _, _ in
             Task { @MainActor in
                 self?.isConnected = false
+                self?.lastConnectionAttempt = Date()
                 print("[SocketIO] Disconnected")
             }
         }
 
-        socket.on(clientEvent: .error) { _, args in
+        socket.on(clientEvent: .reconnect) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.reconnectAttempts += 1
+                self?.lastConnectionAttempt = Date()
+                if let attempts = self?.reconnectAttempts,
+                   let threshold = self?.initialReconnectThreshold,
+                   attempts > threshold {
+                    self?.serverUnreachable = true
+                }
+                print("[SocketIO] Reconnect attempt \(self?.reconnectAttempts ?? 0)")
+            }
+        }
+
+        socket.on(clientEvent: .reconnectAttempt) { [weak self] _, _ in
+            Task { @MainActor in
+                self?.reconnectAttempts += 1
+                self?.lastConnectionAttempt = Date()
+                if let attempts = self?.reconnectAttempts,
+                   let threshold = self?.initialReconnectThreshold,
+                   attempts > threshold {
+                    self?.serverUnreachable = true
+                }
+            }
+        }
+
+        socket.on(clientEvent: .error) { [weak self] _, args in
             print("[SocketIO] Error: \(args)")
+            Task { @MainActor in
+                self?.lastConnectionAttempt = Date()
+            }
         }
 
         // Device events
@@ -223,6 +258,8 @@ class SocketIOManager: ObservableObject {
     static let shared = SocketIOManager()
 
     @Published var isConnected = false
+    @Published var serverUnreachable = false
+    @Published var lastConnectionAttempt: Date?
     @Published var lastDeviceUpdate: DeviceStatusEvent?
     @Published var lastAlert: AlertEvent?
     @Published var lastSnapshot: SnapshotEvent?
@@ -235,6 +272,16 @@ class SocketIOManager: ObservableObject {
         webSocketManager.$isConnected
             .receive(on: DispatchQueue.main)
             .assign(to: &$isConnected)
+
+        // Forward server unreachable state
+        webSocketManager.$serverUnreachable
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$serverUnreachable)
+
+        // Forward last connection attempt
+        webSocketManager.$lastConnectionAttempt
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$lastConnectionAttempt)
 
         // Forward device updates
         webSocketManager.$lastDeviceUpdate

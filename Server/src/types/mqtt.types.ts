@@ -85,7 +85,15 @@ export interface FilesystemUpdateMessage {
  * Published: When server needs device to perform action
  */
 export interface DeviceCommandMessage {
-  command: 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert' | 'ota_update' | 'capture_snapshot' | 'update_tenant' | 'escalation' | 'alert_clear' | 'test_trigger';
+  command:
+    | 'reboot' | 'status' | 'alert_reset' | 'calibrate' | 'test_alert'
+    | 'ota_update' | 'capture_snapshot' | 'update_tenant' | 'escalation'
+    | 'alert_clear' | 'test_trigger'
+    // Device control commands
+    | 'set_camera_settings' | 'get_camera_settings'
+    | 'set_calibration' | 'get_calibration' | 'recalibrate'
+    | 'set_servo_settings' | 'get_servo_settings' | 'test_servo'
+    | 'set_motion_config' | 'get_motion_config';
   params?: Record<string, any>;  // Command-specific parameters
   timestamp?: number;            // Unix timestamp (ms)
   requestId?: string;            // For tracking command execution
@@ -107,6 +115,19 @@ export interface DeviceCommandMessage {
   // Alert clear fields (when command is 'alert_clear')
   alertId?: string;              // Alert ID being cleared
   reason?: string;               // Reason for clearing ('acknowledged', 'resolved', etc.)
+  // Camera settings fields (when command is 'set_camera_settings')
+  settings?: Record<string, any>;
+  // Calibration fields (when command is 'set_calibration')
+  calibrationOffset?: number;
+  overrideThreshold?: number;
+  // Servo fields (when command is 'set_servo_settings')
+  startUS?: number;
+  endUS?: number;
+  disabled?: boolean;
+  // Motion config fields (when command is 'set_motion_config')
+  threshold?: number;
+  minSize?: number;
+  maxSize?: number;
 }
 
 // ============================================================================
@@ -215,7 +236,7 @@ export interface MqttServiceEvents {
  * Parsed MQTT topic components
  */
 export interface ParsedTopic {
-  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'rotation_ack' | 'motion_event' | 'unknown';
+  type: 'device_status' | 'ota_progress' | 'firmware_update' | 'filesystem_update' | 'device_command' | 'camera_snapshot' | 'device_alert' | 'alert_cleared' | 'rotation_ack' | 'motion_event' | 'device_settings' | 'unknown';
   tenantId?: string;
   macAddress?: string;
   commandType?: string;

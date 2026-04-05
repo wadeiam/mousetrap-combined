@@ -13,6 +13,9 @@ dist/
 .env.local
 .env.*.local
 
+# Secrets / keys
+Server/keys/
+
 # Database backups (keep locally, not in repo)
 backups/
 
@@ -30,6 +33,10 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Xcode / Swift PM
+*.xcuserstate
+MouseTrap-iOS/.build/
 
 # Arduino cache
 .arduino/

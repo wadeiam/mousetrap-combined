@@ -134,8 +134,7 @@ constexpr int CAPTURE_DIR_LEN = sizeof(CAPTURE_DIR) - 1;
 
 // Device Claim Server Configuration
 #ifndef CLAIM_SERVER_URL
-#define CLAIM_SERVER_URL  "http://192.168.133.110:4000"
-// #define CLAIM_SERVER_URL  "http://mtmon.wadehargrove.com:4000"
+#define CLAIM_SERVER_URL  "http://mtmon.wadehargrove.com:4000"
 #endif
 
 // HMAC-SHA256 Shared Secret for Device Claim Tokens
@@ -154,8 +153,7 @@ struct ClaimCredentials {
 
 // MQTT Configuration (defaults - overridden by claimed credentials)
 #ifndef MQTT_BROKER
-#define MQTT_BROKER  "192.168.133.110"
-//#define MQTT_BROKER  "mtmon.wadehargrove.com"
+#define MQTT_BROKER  "mtmon.wadehargrove.com"
 #endif
 #ifndef MQTT_PORT
 #define MQTT_PORT    1883  // Use 8883 for TLS
@@ -384,6 +382,13 @@ static unsigned long lastNvsVerification = 0;  // Track last NVS claim status ve
 static bool mqttOtaInProgress = false;
 static bool mqttReallyConnected = false;  // Track actual MQTT connection state
 static unsigned long lastMqttActivity = 0;  // Track last successful MQTT operation
+
+// Network failure watchdog - detect persistent TCP-level failures and recover
+static int consecutiveMqttTcpFailures = 0;      // Count of consecutive rc=-2/-3/-4 failures
+static unsigned long lastWifiStackRefresh = 0;  // Track when we last refreshed WiFi
+static const int WIFI_REFRESH_THRESHOLD = 10;   // Refresh WiFi after this many TCP failures
+static const int REBOOT_THRESHOLD = 20;         // Reboot after this many TCP failures
+static const unsigned long WIFI_REFRESH_COOLDOWN = 60000;  // Don't refresh WiFi more than once per minute
 static bool fsUploadStarted = false;  // Track if LittleFS upload started (prevents crash checking Update.hasError() on uninitialized object)
 static bool fwUploadStarted = false;  // Track if firmware upload started
 static String mqttOtaType = "";  // "firmware" or "filesystem"
@@ -1349,6 +1354,28 @@ void loadClaimedCredentials() {
     claimedDeviceName = devicePrefs.getString("deviceName", "Unclaimed Device");
 
     Serial.println("[CLAIM] Device credentials loaded from Preferences");
+
+    // ========== MIGRATION: IP to Hostname ==========
+    // Migrate devices with hardcoded IP to hostname for subnet-independent operation
+    if (claimedMqttBroker == "192.168.133.110") {
+      Serial.println("[CLAIM-MIGRATE] ========================================");
+      Serial.println("[CLAIM-MIGRATE] MIGRATING BROKER FROM IP TO HOSTNAME");
+      Serial.println("[CLAIM-MIGRATE] Old: 192.168.133.110");
+      Serial.println("[CLAIM-MIGRATE] New: mtmon.wadehargrove.com");
+      Serial.println("[CLAIM-MIGRATE] ========================================");
+
+      claimedMqttBroker = "mtmon.wadehargrove.com";
+
+      // Persist the hostname to NVS
+      devicePrefs.begin("device", false);
+      devicePrefs.putString("mqttBroker", claimedMqttBroker);
+      devicePrefs.end();
+
+      Serial.println("[CLAIM-MIGRATE] Broker migrated to hostname");
+      addSystemLog("[CLAIM-MIGRATE] Broker migrated to mtmon.wadehargrove.com");
+    }
+    // ========== END MIGRATION ==========
+
     Serial.println("[CLAIM] Verifying claim status with server...");
 
     // Verify with server (need WiFi first, so we'll do this in setup after WiFi connects)
@@ -1636,10 +1663,7 @@ ClaimVerificationResult checkClaimStatusWithServer() {
     bool claimed = responseDoc["claimed"] | false;
 
     if (claimed) {
-      Serial.println("[CLAIM-VERIFY] ========================================");
-      Serial.println("[CLAIM-VERIFY] SUCCESS: Server confirms device is claimed");
-      Serial.println("[CLAIM-VERIFY] Result: CLAIM_VERIFIED");
-      Serial.println("[CLAIM-VERIFY] ========================================");
+      Serial.println("[CLAIM-VERIFY] Server confirms claim record exists");
       http.end();
       return CLAIM_VERIFIED;
     } else {
@@ -2352,11 +2376,19 @@ void handleOtaNotification(const JsonDocument& doc) {
   const char* url = doc["url"];
   size_t size = doc["size"] | 0;
   const char* sha256 = doc["sha256"] | "";
+  const char* deviceType = doc["device_type"] | "";
 
-  Serial.printf("[OTA] MQTT payload - version: '%s', url: '%s'\n", version ? version : "NULL", url ? url : "NULL");
+  Serial.printf("[OTA] MQTT payload - version: '%s', url: '%s', device_type: '%s'\n",
+                version ? version : "NULL", url ? url : "NULL", deviceType);
 
   if (!version || !url) {
     Serial.println("[OTA] Invalid update message");
+    return;
+  }
+
+  // Check device_type filter - if specified, must match "trap"
+  if (strlen(deviceType) > 0 && strcmp(deviceType, "trap") != 0) {
+    Serial.printf("[OTA] Ignoring update for device_type '%s' (this is a trap)\n", deviceType);
     return;
   }
 
@@ -2761,8 +2793,97 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
           Serial.println("[MQTT-ROTATE] ERROR: Missing password in rotation command");
           addSystemLog("[MQTT-ROTATE] ERROR: Invalid rotate_credentials - missing password");
         }
+      } else if (strcmp(cmd, "set_wifi") == 0) {
+        // Update WiFi credentials via MQTT - allows remote WiFi change without device access
+        Serial.println("[MQTT-WIFI] ========================================");
+        Serial.println("[MQTT-WIFI] WIFI UPDATE COMMAND RECEIVED");
+        Serial.println("[MQTT-WIFI] ========================================");
+
+        const char* newSSID = doc["ssid"];
+        const char* newPassword = doc["password"];
+
+        if (newSSID && strlen(newSSID) > 0) {
+          Serial.printf("[MQTT-WIFI] New SSID: %s\n", newSSID);
+          addSystemLog(String("[MQTT-WIFI] Updating WiFi to: ") + newSSID);
+
+          // Save new WiFi credentials (separate from claim credentials)
+          saveWiFiCredentials(String(newSSID), String(newPassword ? newPassword : ""));
+
+          Serial.println("[MQTT-WIFI] WiFi credentials saved, rebooting...");
+          addSystemLog("[MQTT-WIFI] WiFi updated, rebooting to apply...");
+          delay(1000);
+          ESP.restart();
+        } else {
+          Serial.println("[MQTT-WIFI] ERROR: Missing SSID in set_wifi command");
+          addSystemLog("[MQTT-WIFI] ERROR: Missing SSID");
+        }
+      }
+      // ========== Settings Commands (for iOS app remote control) ==========
+      else if (strcmp(cmd, "get_camera_settings") == 0) {
+        handleMqttGetCameraSettings(doc);
+      } else if (strcmp(cmd, "set_camera_settings") == 0) {
+        handleMqttSetCameraSettings(doc);
+      } else if (strcmp(cmd, "get_calibration") == 0) {
+        handleMqttGetCalibration(doc);
+      } else if (strcmp(cmd, "set_calibration") == 0) {
+        handleMqttSetCalibration(doc);
+      } else if (strcmp(cmd, "recalibrate") == 0) {
+        handleMqttRecalibrate(doc);
+      } else if (strcmp(cmd, "get_servo_settings") == 0) {
+        handleMqttGetServoSettings(doc);
+      } else if (strcmp(cmd, "set_servo_settings") == 0) {
+        handleMqttSetServoSettings(doc);
+      } else if (strcmp(cmd, "test_servo") == 0) {
+        handleMqttTestServo(doc);
       }
     }
+  }
+}
+
+// Refresh WiFi stack without full reboot - attempt to recover from network issues
+void refreshWifiStack() {
+  if (millis() - lastWifiStackRefresh < WIFI_REFRESH_COOLDOWN) {
+    Serial.println("[WIFI-WATCHDOG] Skipping refresh - cooldown active");
+    return;
+  }
+
+  lastWifiStackRefresh = millis();
+  Serial.println("[WIFI-WATCHDOG] ========================================");
+  Serial.println("[WIFI-WATCHDOG] Refreshing WiFi stack due to persistent TCP failures");
+  Serial.printf("[WIFI-WATCHDOG] Consecutive failures: %d\n", consecutiveMqttTcpFailures);
+  Serial.println("[WIFI-WATCHDOG] ========================================");
+  addSystemLog("[WIFI-WATCHDOG] Refreshing WiFi stack after " + String(consecutiveMqttTcpFailures) + " TCP failures");
+
+  // Disconnect WiFi
+  WiFi.disconnect(true);  // true = clear stored credentials from RAM
+  delay(1000);
+
+  // Reconnect using saved credentials
+  if (savedSSID.length() > 0) {
+    Serial.printf("[WIFI-WATCHDOG] Reconnecting to %s...\n", savedSSID.c_str());
+    WiFi.begin(savedSSID.c_str(), savedPassword.c_str());
+
+    // Wait for connection (max 15 seconds)
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[WIFI-WATCHDOG] WiFi reconnected! IP: %s\n", WiFi.localIP().toString().c_str());
+      addSystemLog("[WIFI-WATCHDOG] WiFi reconnected: " + WiFi.localIP().toString());
+      // Reset failure counter on successful reconnect
+      consecutiveMqttTcpFailures = 0;
+    } else {
+      Serial.println("[WIFI-WATCHDOG] WiFi reconnect failed");
+      addSystemLog("[WIFI-WATCHDOG] WiFi reconnect FAILED");
+    }
+  } else {
+    Serial.println("[WIFI-WATCHDOG] No saved SSID - cannot reconnect");
+    addSystemLog("[WIFI-WATCHDOG] No saved WiFi credentials");
   }
 }
 
@@ -2918,9 +3039,39 @@ bool mqttConnect() {
       }
     } else {
       Serial.println("[MQTT] Check network connectivity or server status");
+
+      // TCP-level failure watchdog (rc=-2: CONNECT_FAILED, rc=-3: CONNECTION_LOST, rc=-4: TIMEOUT)
+      if (rc == -2 || rc == -3 || rc == -4) {
+        consecutiveMqttTcpFailures++;
+        Serial.printf("[WIFI-WATCHDOG] TCP failure #%d (rc=%d)\n", consecutiveMqttTcpFailures, rc);
+        addSystemLog("[WIFI-WATCHDOG] TCP failure #" + String(consecutiveMqttTcpFailures) + " (rc=" + String(rc) + ")");
+
+        // Check if we need to reboot (higher threshold)
+        if (consecutiveMqttTcpFailures >= REBOOT_THRESHOLD) {
+          Serial.println("[WIFI-WATCHDOG] ========================================");
+          Serial.printf("[WIFI-WATCHDOG] %d consecutive TCP failures - REBOOTING\n", consecutiveMqttTcpFailures);
+          Serial.println("[WIFI-WATCHDOG] WiFi refresh didn't help, forcing full reboot");
+          Serial.println("[WIFI-WATCHDOG] ========================================");
+          addSystemLog("[WIFI-WATCHDOG] " + String(consecutiveMqttTcpFailures) + " TCP failures - REBOOTING");
+          delay(1000);  // Give time for log to be written
+          ESP.restart();
+        }
+        // Check if we need to refresh WiFi stack (lower threshold)
+        else if (consecutiveMqttTcpFailures >= WIFI_REFRESH_THRESHOLD) {
+          Serial.printf("[WIFI-WATCHDOG] %d consecutive TCP failures - refreshing WiFi stack\n", consecutiveMqttTcpFailures);
+          refreshWifiStack();
+        }
+      }
     }
 
     return false;
+  }
+
+  // Connection successful - reset the TCP failure watchdog
+  if (consecutiveMqttTcpFailures > 0) {
+    Serial.printf("[WIFI-WATCHDOG] Connection restored after %d TCP failures\n", consecutiveMqttTcpFailures);
+    addSystemLog("[WIFI-WATCHDOG] Connection restored after " + String(consecutiveMqttTcpFailures) + " failures");
+    consecutiveMqttTcpFailures = 0;
   }
 
   Serial.println("[MQTT] Connected with claimed credentials!");
@@ -7418,6 +7569,350 @@ void handleAlertClearCommand(JsonDocument& doc) {
   }
 }
 
+// ============================================================================
+// MQTT Settings Command Handlers
+// These enable remote device configuration via the iOS app and server
+// ============================================================================
+
+// Helper to publish settings response back to server
+void publishSettingsResponse(const String& requestId, JsonDocument& responseDoc) {
+  if (!mqttClient.connected()) {
+    Serial.println("[MQTT-SETTINGS] Not connected, cannot publish response");
+    return;
+  }
+
+  String topic = "tenant/" + claimedTenantId + "/device/" + claimedMqttClientId + "/settings";
+  responseDoc["requestId"] = requestId;
+  responseDoc["timestamp"] = time(nullptr) * 1000;  // ms for JS compatibility
+
+  String payload;
+  serializeJson(responseDoc, payload);
+
+  mqttClient.publish(topic.c_str(), payload.c_str());
+  Serial.printf("[MQTT-SETTINGS] Published response to %s\n", topic.c_str());
+}
+
+// GET camera settings via MQTT
+void handleMqttGetCameraSettings(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] get_camera_settings command");
+
+  const char* requestId = doc["requestId"];
+  sensor_t *s = esp_camera_sensor_get();
+
+  JsonDocument response;
+  response["type"] = "camera_settings";
+  response["success"] = (s != nullptr);
+
+  if (s) {
+    response["settings"]["videoMode"] = videoMode;
+    response["settings"]["framesize"] = s->status.framesize;
+    response["settings"]["quality"] = s->status.quality;
+    response["settings"]["brightness"] = s->status.brightness;
+    response["settings"]["contrast"] = s->status.contrast;
+    response["settings"]["saturation"] = s->status.saturation;
+    response["settings"]["vflip"] = s->status.vflip;
+    response["settings"]["hmirror"] = s->status.hmirror;
+  } else {
+    response["error"] = "Camera not initialized";
+  }
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// SET camera settings via MQTT
+void handleMqttSetCameraSettings(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] set_camera_settings command");
+
+  const char* requestId = doc["requestId"];
+  sensor_t *s = esp_camera_sensor_get();
+
+  JsonDocument response;
+  response["type"] = "camera_settings";
+
+  if (!s) {
+    response["success"] = false;
+    response["error"] = "Camera not initialized";
+    publishSettingsResponse(requestId ? String(requestId) : "", response);
+    return;
+  }
+
+  bool changed = false;
+
+  // Apply settings from doc (same logic as HTTP POST handler)
+  if (doc.containsKey("videoMode")) {
+    videoMode = doc["videoMode"].as<bool>();
+    changed = true;
+  }
+  if (doc.containsKey("framesize")) {
+    int fs = doc["framesize"].as<int>();
+    if (fs >= 0 && fs <= 13) {
+      s->set_framesize(s, (framesize_t)fs);
+      changed = true;
+    }
+  }
+  if (doc.containsKey("quality")) {
+    int q = doc["quality"].as<int>();
+    if (q >= 4 && q <= 63) {
+      s->set_quality(s, q);
+      changed = true;
+    }
+  }
+  if (doc.containsKey("brightness")) {
+    int b = doc["brightness"].as<int>();
+    if (b >= -2 && b <= 2) {
+      s->set_brightness(s, b);
+      changed = true;
+    }
+  }
+  if (doc.containsKey("contrast")) {
+    int c = doc["contrast"].as<int>();
+    if (c >= -2 && c <= 2) {
+      s->set_contrast(s, c);
+      changed = true;
+    }
+  }
+  if (doc.containsKey("saturation")) {
+    int sat = doc["saturation"].as<int>();
+    if (sat >= -2 && sat <= 2) {
+      s->set_saturation(s, sat);
+      changed = true;
+    }
+  }
+  if (doc.containsKey("vflip")) {
+    s->set_vflip(s, doc["vflip"].as<bool>() ? 1 : 0);
+    changed = true;
+  }
+  if (doc.containsKey("hmirror")) {
+    s->set_hmirror(s, doc["hmirror"].as<bool>() ? 1 : 0);
+    changed = true;
+  }
+
+  // Persist if requested
+  bool persist = doc.containsKey("persist") ? doc["persist"].as<bool>() : true;
+  if (changed && persist) {
+    saveSettings();
+    addSystemLog("[MQTT] Camera settings updated via MQTT");
+  }
+
+  response["success"] = true;
+  response["changed"] = changed;
+
+  // Include current settings in response
+  response["settings"]["videoMode"] = videoMode;
+  response["settings"]["framesize"] = s->status.framesize;
+  response["settings"]["quality"] = s->status.quality;
+  response["settings"]["brightness"] = s->status.brightness;
+  response["settings"]["contrast"] = s->status.contrast;
+  response["settings"]["saturation"] = s->status.saturation;
+  response["settings"]["vflip"] = s->status.vflip;
+  response["settings"]["hmirror"] = s->status.hmirror;
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// GET calibration settings via MQTT
+void handleMqttGetCalibration(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] get_calibration command");
+
+  const char* requestId = doc["requestId"];
+
+  Preferences prefs;
+  prefs.begin("settings", true);  // readOnly
+  const int calibOff = prefs.getInt("calibOff", 0);
+  const int falseOff = prefs.getInt("falseOff", 0);
+  const int overrideTh = prefs.getInt("overrideTh", 0);
+  prefs.end();
+
+  JsonDocument response;
+  response["type"] = "calibration";
+  response["success"] = true;
+  response["settings"]["threshold"] = threshold;
+  response["settings"]["calibrationOffset"] = calibOff;
+  response["settings"]["falseAlarmOffset"] = falseOff;
+  response["settings"]["overrideThreshold"] = overrideTh;
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// SET calibration settings via MQTT
+void handleMqttSetCalibration(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] set_calibration command");
+
+  const char* requestId = doc["requestId"];
+
+  preferences.begin("settings", false);
+  bool changed = false;
+
+  // Update calibration offset
+  if (doc.containsKey("calibrationOffset")) {
+    int newOff = doc["calibrationOffset"].as<int>();
+    int delta = newOff - calibrationOffset;
+    if (delta != 0) {
+      calibrationOffset = newOff;
+      preferences.putInt("calibOff", calibrationOffset);
+      threshold = max(0, int(threshold) + delta);
+      changed = true;
+      addSystemLog("[MQTT] Calibration offset set to " + String(calibrationOffset));
+    }
+  }
+
+  // Update override threshold
+  if (doc.containsKey("overrideThreshold")) {
+    int newOvr = doc["overrideThreshold"].as<int>();
+    if (newOvr != overrideThreshold) {
+      overrideThreshold = newOvr;
+      preferences.putInt("overrideTh", overrideThreshold);
+      if (newOvr > 0) {
+        threshold = newOvr;
+      }
+      changed = true;
+      addSystemLog("[MQTT] Override threshold set to " + String(overrideThreshold));
+    }
+  }
+
+  preferences.end();
+
+  // Read back current values
+  Preferences prefs;
+  prefs.begin("settings", true);
+  const int calibOff = prefs.getInt("calibOff", 0);
+  const int overrideTh = prefs.getInt("overrideTh", 0);
+  prefs.end();
+
+  JsonDocument response;
+  response["type"] = "calibration";
+  response["success"] = true;
+  response["changed"] = changed;
+  response["settings"]["threshold"] = threshold;
+  response["settings"]["calibrationOffset"] = calibOff;
+  response["settings"]["overrideThreshold"] = overrideTh;
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// Trigger recalibration via MQTT
+void handleMqttRecalibrate(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] recalibrate command");
+
+  const char* requestId = doc["requestId"];
+
+  JsonDocument response;
+  response["type"] = "calibration";
+
+  if (overrideThreshold > 0) {
+    response["success"] = false;
+    response["error"] = "Cannot recalibrate while override threshold is active";
+    publishSettingsResponse(requestId ? String(requestId) : "", response);
+    return;
+  }
+
+  // Launch recalibration task
+  xTaskCreatePinnedToCore(recalibTask, "ReCal", 4096, nullptr, 1, nullptr, 0);
+
+  response["success"] = true;
+  response["message"] = "Recalibration started";
+  addSystemLog("[MQTT] Recalibration triggered via MQTT");
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// GET servo settings via MQTT
+void handleMqttGetServoSettings(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] get_servo_settings command");
+
+  const char* requestId = doc["requestId"];
+
+  JsonDocument response;
+  response["type"] = "servo_settings";
+  response["success"] = true;
+  response["settings"]["startUS"] = servoStartUS;
+  response["settings"]["endUS"] = servoEndUS;
+  response["settings"]["disabled"] = disableServo;
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// SET servo settings via MQTT
+void handleMqttSetServoSettings(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] set_servo_settings command");
+
+  const char* requestId = doc["requestId"];
+  bool changed = false;
+
+  preferences.begin("settings", false);
+
+  if (doc.containsKey("startUS")) {
+    int newStart = doc["startUS"].as<int>();
+    if (newStart != servoStartUS) {
+      servoStartUS = newStart;
+      preferences.putUInt("servoStart", newStart);
+      changed = true;
+      addSystemLog("[MQTT] Servo start set to " + String(newStart) + " µs");
+    }
+  }
+
+  if (doc.containsKey("endUS")) {
+    int newEnd = doc["endUS"].as<int>();
+    if (newEnd != servoEndUS) {
+      servoEndUS = newEnd;
+      preferences.putUInt("servoEnd", newEnd);
+      changed = true;
+      addSystemLog("[MQTT] Servo end set to " + String(newEnd) + " µs");
+    }
+  }
+
+  if (doc.containsKey("disabled")) {
+    bool newDisable = doc["disabled"].as<bool>();
+    if (newDisable != disableServo) {
+      disableServo = newDisable;
+      preferences.putBool("disableServo", newDisable);
+      changed = true;
+      addSystemLog("[MQTT] Servo disabled: " + String(newDisable ? "true" : "false"));
+    }
+  }
+
+  preferences.end();
+
+  JsonDocument response;
+  response["type"] = "servo_settings";
+  response["success"] = true;
+  response["changed"] = changed;
+  response["settings"]["startUS"] = servoStartUS;
+  response["settings"]["endUS"] = servoEndUS;
+  response["settings"]["disabled"] = disableServo;
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// Test servo via MQTT
+void handleMqttTestServo(JsonDocument& doc) {
+  Serial.println("[MQTT-SETTINGS] test_servo command");
+
+  const char* requestId = doc["requestId"];
+
+  JsonDocument response;
+  response["type"] = "servo_settings";
+
+  if (disableServo) {
+    response["success"] = false;
+    response["error"] = "Servo is disabled";
+    publishSettingsResponse(requestId ? String(requestId) : "", response);
+    return;
+  }
+
+  triggerServo();
+  addSystemLog("[MQTT] Servo test triggered via MQTT");
+
+  response["success"] = true;
+  response["message"] = "Servo triggered";
+
+  publishSettingsResponse(requestId ? String(requestId) : "", response);
+}
+
+// ============================================================================
+// End MQTT Settings Command Handlers
+// ============================================================================
+
 // Handle test trigger command from server - triggers alert without taking photos
 void handleTestTriggerCommand() {
   Serial.println("[ESCALATION] ========================================");
@@ -11721,6 +12216,10 @@ void setup() {
   // Load WiFi credentials from Preferences
   loadWiFiCredentials();
 
+  // Load claim status early so we can check after WiFi connects
+  // (needed to know if we should disable lingering AP on boot)
+  loadClaimedCredentials();
+
   // Check if we have saved WiFi credentials
   // If not, go directly to AP mode (captive portal) for setup
   if (savedSSID.length() == 0) {
@@ -11816,6 +12315,15 @@ void setup() {
     addBootLog(String("WiFi connected with IP: ") + WiFi.localIP().toString());
     isAPMode = false;
 
+    // For already-claimed/standalone devices on boot, explicitly disable any lingering AP
+    // This does NOT affect setup - during setup deviceClaimed is still false
+    if (deviceClaimed || standaloneMode) {
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      Serial.println("[WIFI] Device is claimed/standalone - ensuring AP is disabled");
+      addSystemLog("[WIFI] Claimed/standalone device - AP disabled on boot");
+    }
+
     // mDNS will be started after loading claimed credentials
   } else {
     // WiFi connection failed - start Access Point mode (AP_STA allows scanning)
@@ -11910,10 +12418,8 @@ void setup() {
       addSystemLog("[STARTUP-CLAIM] Device revoked by server during startup verification");
       unclaimDevice();
     } else if (result == CLAIM_VERIFIED) {
-      Serial.println("[STARTUP-CLAIM] ========================================");
-      Serial.println("[STARTUP-CLAIM] SUCCESS - Claim status verified successfully");
-      Serial.println("[STARTUP-CLAIM] ========================================");
-      addSystemLog("[STARTUP-CLAIM] Claim verified with server at startup");
+      Serial.println("[STARTUP-CLAIM] Claim record verified (server knows this device)");
+      addSystemLog("[STARTUP-CLAIM] Claim record verified");
     } else {
       // NETWORK_ERROR or SERVER_ERROR - stay claimed
       Serial.println("[STARTUP-CLAIM] ========================================");

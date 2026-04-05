@@ -53,5 +53,7 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>MouseTrap needs local network access to communicate with the monitoring server on your network.</string>
 </dict>
 </plist>

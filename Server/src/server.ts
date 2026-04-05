@@ -14,6 +14,8 @@ import { initEscalationService, getEscalationService } from './services/escalati
 import { initSmsService } from './services/sms.service';
 import { initEmailService } from './services/email.service';
 import { initClassificationService, getClassificationService } from './services/classification.service';
+import { initOfflineEscalationService, getOfflineEscalationService } from './services/offline-escalation.service';
+import { initHealthcheckService, getHealthcheckService } from './services/healthcheck.service';
 
 // Load environment variables
 dotenv.config();
@@ -73,6 +75,13 @@ if (emailService.isEnabled()) {
 // Initialize Classification service (AI-powered rodent detection)
 const classificationService = initClassificationService(dbPool);
 console.log('✓ Classification service initialized (lazy model loading)');
+
+// Initialize Offline Escalation service (critical for animal welfare)
+const offlineEscalationService = initOfflineEscalationService(dbPool);
+console.log('✓ Offline escalation service initialized (push + SMS alerts)');
+
+// Initialize Healthcheck service (external dead man's switch monitoring)
+const healthcheckService = initHealthcheckService(process.env.HEALTHCHECKS_URL);
 
 // Initialize MQTT service
 const mqttService = new MqttService(
@@ -140,6 +149,12 @@ mqttService.on('error', (err: Error) => {
     stack: err.stack,
   });
   // Don't crash - the service will attempt reconnection automatically
+
+  // Signal failure to external monitoring
+  const hc = getHealthcheckService();
+  if (hc.isEnabled()) {
+    hc.signalFail(`MQTT error: ${err.message}`);
+  }
 });
 
 // Forward MQTT events to WebSocket clients
@@ -160,18 +175,108 @@ mqttService.on('device:status', ({ tenantId, macAddress, status }) => {
   });
 });
 
-mqttService.on('device:online', ({ tenantId, macAddress }) => {
+mqttService.on('device:online', async ({ tenantId, macAddress }) => {
   io.to(`tenant:${tenantId}`).emit('device:online', {
     macAddress,
     timestamp: Date.now(),
   });
+
+  // Stop offline escalation tracking when device comes back online
+  const escalation = getOfflineEscalationService();
+  if (escalation) {
+    try {
+      const deviceResult = await dbPool.query(
+        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress]
+      );
+      if (deviceResult.rows.length > 0) {
+        const device = deviceResult.rows[0];
+        escalation.deviceOnline(tenantId, device.id);
+        console.log(`[OFFLINE-ESCALATION] Device back online: ${device.name}`);
+
+        // Log connectivity event
+        try {
+          await dbPool.query(
+            'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
+            [device.id, tenantId, 'online']
+          );
+        } catch (logErr) {
+          console.error('[CONNECTIVITY-LOG] Error logging online event:', logErr);
+        }
+      }
+    } catch (error) {
+      console.error('[OFFLINE-ESCALATION] Error stopping tracking:', error);
+    }
+  } else {
+    // No escalation service, but still log connectivity
+    try {
+      const deviceResult = await dbPool.query(
+        'SELECT id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress]
+      );
+      if (deviceResult.rows.length > 0) {
+        await dbPool.query(
+          'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
+          [deviceResult.rows[0].id, tenantId, 'online']
+        );
+      }
+    } catch (logErr) {
+      console.error('[CONNECTIVITY-LOG] Error logging online event:', logErr);
+    }
+  }
 });
 
-mqttService.on('device:offline', ({ tenantId, macAddress }) => {
+mqttService.on('device:offline', async ({ tenantId, macAddress }) => {
   io.to(`tenant:${tenantId}`).emit('device:offline', {
     macAddress,
     timestamp: Date.now(),
   });
+
+  // Start offline escalation tracking (immediate push, then SMS at 15/30/60 min)
+  // This is critical for animal welfare - trapped mice must not be left unattended
+  const escalation = getOfflineEscalationService();
+  if (escalation) {
+    try {
+      // Get device info from database
+      const deviceResult = await dbPool.query(
+        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress]
+      );
+      if (deviceResult.rows.length > 0) {
+        const device = deviceResult.rows[0];
+        await escalation.deviceOffline(tenantId, device.id, device.name);
+        console.log(`[OFFLINE-ESCALATION] Started tracking: ${device.name}`);
+
+        // Log connectivity event
+        try {
+          await dbPool.query(
+            'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
+            [device.id, tenantId, 'offline']
+          );
+        } catch (logErr) {
+          console.error('[CONNECTIVITY-LOG] Error logging offline event:', logErr);
+        }
+      }
+    } catch (error) {
+      console.error('[OFFLINE-ESCALATION] Error starting tracking:', error);
+    }
+  } else {
+    // No escalation service, but still log connectivity
+    try {
+      const deviceResult = await dbPool.query(
+        'SELECT id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        [tenantId, macAddress]
+      );
+      if (deviceResult.rows.length > 0) {
+        await dbPool.query(
+          'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
+          [deviceResult.rows[0].id, tenantId, 'offline']
+        );
+      }
+    } catch (logErr) {
+      console.error('[CONNECTIVITY-LOG] Error logging offline event:', logErr);
+    }
+  }
 });
 
 mqttService.on('alert:resolved', (data: any) => {
@@ -204,18 +309,28 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
   .map(origin => origin.trim());
 
-console.log('CORS allowed origins:', allowedOrigins);
+// Allow any origin from a private/local IP (RFC 1918) so LAN access always works
+// regardless of DHCP-assigned IP changes
+function isAllowedOrigin(origin: string): boolean {
+  if (allowedOrigins.indexOf(origin) !== -1) return true;
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+    // RFC 1918 private ranges: 10.x.x.x, 192.168.x.x, 172.16-31.x.x
+    if (/^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;
+  } catch {}
+  return false;
+}
+
+console.log('CORS allowed origins:', allowedOrigins, '+ all RFC 1918 private IPs');
 
 // Initialize Socket.io with CORS and explicit timing settings
 const io = new SocketIOServer(server, {
   cors: {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
-      } else {
-        callback(null, false);
-      }
+      callback(null, isAllowedOrigin(origin));
     },
     credentials: true,
   },
@@ -224,6 +339,8 @@ const io = new SocketIOServer(server, {
   pingInterval: 25000,     // Ping every 25 seconds
   connectTimeout: 45000,   // 45 seconds to establish connection
   transports: ['websocket', 'polling'], // Allow both transports
+  maxHttpBufferSize: 5e6,  // 5MB max message size for large snapshots
+  perMessageDeflate: false, // Disable compression to avoid issues with mobile clients
 });
 
 // Socket.io connection handler
@@ -257,7 +374,7 @@ app.use(cors({
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
 
-    if (allowedOrigins.indexOf(origin) !== -1) {
+    if (isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
       console.warn(`CORS blocked origin: ${origin}`);
@@ -290,18 +407,26 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 // Health check endpoint
 app.get('/health', async (_req: Request, res: Response) => {
+  const mqttStatus = mqttService.getStatus();
+  const mqttConnected = mqttStatus.connected;
+
   try {
     await dbPool.query('SELECT 1');
-    res.json({
-      status: 'healthy',
+    const status = mqttConnected ? 'healthy' : 'degraded';
+    const httpCode = mqttConnected ? 200 : 503;
+
+    res.status(httpCode).json({
+      status,
       database: 'connected',
-      mqtt: mqttService.isConnected() ? 'connected' : 'disconnected',
+      mqtt: mqttConnected ? 'connected' : 'disconnected',
+      mqttReconnectAttempts: mqttStatus.reconnectAttempts,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
     res.status(500).json({
       status: 'unhealthy',
       database: 'disconnected',
+      mqtt: mqttConnected ? 'connected' : 'disconnected',
       error: error instanceof Error ? error.message : 'Unknown error',
     });
   }
@@ -344,6 +469,14 @@ try {
   console.log('✓ Devices routes loaded');
 } catch (e) {
   console.warn('Devices routes not found - skipping');
+}
+
+try {
+  const deviceControlsRoutes = require('./routes/device-controls.routes');
+  app.use('/api/devices', deviceControlsRoutes.default || deviceControlsRoutes);
+  console.log('✓ Device controls routes loaded');
+} catch (e) {
+  console.warn('Device controls routes not found - skipping');
 }
 
 try {
@@ -393,6 +526,14 @@ try {
   logger.info('Logs API routes initialized');
 } catch (e) {
   console.warn('Logs routes not found - skipping');
+}
+
+try {
+  const diagnosticsRoutes = require('./routes/diagnostics.routes');
+  app.use('/api', diagnosticsRoutes.default || diagnosticsRoutes);
+  console.log('✓ Diagnostics routes loaded');
+} catch (e) {
+  console.warn('Diagnostics routes not found - skipping');
 }
 
 try {
@@ -447,6 +588,8 @@ process.on('SIGTERM', () => {
   console.log('SIGTERM received, shutting down gracefully...');
   logger.info('SIGTERM received, shutting down gracefully');
   if (escalationInterval) clearInterval(escalationInterval);
+  healthcheckService.stop();
+  offlineEscalationService.stop();
   mqttService.disconnect();
   dbPool.end();
   process.exit(0);
@@ -456,6 +599,8 @@ process.on('SIGINT', () => {
   console.log('SIGINT received, shutting down gracefully...');
   logger.info('SIGINT received, shutting down gracefully');
   if (escalationInterval) clearInterval(escalationInterval);
+  healthcheckService.stop();
+  offlineEscalationService.stop();
   mqttService.disconnect();
   dbPool.end();
   process.exit(0);

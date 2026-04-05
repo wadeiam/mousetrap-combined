@@ -1,6 +1,6 @@
 # MouseTrap Device Claiming Flow
 
-**Last Updated:** 2025-11-21
+**Last Updated:** 2026-01-19
 
 This document describes the complete device claiming process, from factory-new device to fully operational and connected.
 
@@ -483,6 +483,21 @@ This flow is useful for:
 
 ---
 
+## Scout vs Trap Claiming
+
+Both Trap and Scout devices now support the same claim code flow:
+
+| Feature | Trap | Scout |
+|---------|------|-------|
+| Claim code endpoint | `POST /api/device/claim` | `POST /api/device/claim` |
+| Request body | `{claimCode}` | `{claimCode}` |
+| Server API | `POST /api/devices/claim` | `POST /api/devices/claim` |
+| Legacy endpoint | — | `POST /api/device/register-claim` (deprecated) |
+
+The Scout initially used a different endpoint (`/api/device/register-claim` with `{email, password}`) but was updated (2026-01-19) to match the Trap's claim code flow for consistency.
+
+---
+
 ## Files Reference
 
 ### Firmware
@@ -498,6 +513,10 @@ This flow is useful for:
 ---
 
 ## Changelog
+
+### 2026-01-19
+- Added Scout vs Trap claiming comparison section
+- Scout now uses same claim code endpoint as Trap
 
 ### 2025-11-21
 - Initial documentation for captive portal claiming system

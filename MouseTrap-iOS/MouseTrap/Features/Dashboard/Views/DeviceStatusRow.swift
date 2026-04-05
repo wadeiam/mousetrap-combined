@@ -2,6 +2,11 @@ import SwiftUI
 
 struct DeviceStatusRow: View {
     let device: Device
+    @ObservedObject private var lanService = LANDiscoveryService.shared
+
+    private var isLANReachable: Bool {
+        lanService.isReachable(deviceId: device.id)
+    }
 
     var body: some View {
         NavigationLink(destination: DeviceDetailView(device: device)) {
@@ -13,10 +18,19 @@ struct DeviceStatusRow: View {
 
                 // Device info
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(device.displayName)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
+                    HStack(spacing: 4) {
+                        Text(device.displayName)
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.primary)
+
+                        // Muted indicator
+                        if device.isOfflineAlertsMuted {
+                            Image(systemName: "bell.slash.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
+                    }
 
                     HStack(spacing: 8) {
                         Text(statusText)
@@ -45,6 +59,29 @@ struct DeviceStatusRow: View {
                     }
                 }
 
+                // LAN reachability badge
+                if isLANReachable, let ip = lanService.ip(for: device.id) {
+                    Button {
+                        if let url = URL(string: "http://\(ip)/app/") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "network")
+                                .font(.caption2)
+                            Text("LAN")
+                                .font(.caption2)
+                                .fontWeight(.semibold)
+                        }
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 Image(systemName: "chevron.right")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -61,7 +98,7 @@ struct DeviceStatusRow: View {
     private var statusColor: Color {
         switch device.status {
         case .online: return .green
-        case .offline: return .gray
+        case .offline: return isLANReachable ? .blue : .gray
         case .alerting: return .red
         case .error: return .red
         case .maintenance: return .orange
@@ -72,6 +109,7 @@ struct DeviceStatusRow: View {
         switch device.status {
         case .online: return "Online"
         case .offline:
+            if isLANReachable { return "Available on LAN" }
             if let lastSeen = device.lastSeen {
                 return "Last seen \(formatRelativeTime(lastSeen))"
             }
@@ -144,7 +182,11 @@ struct DeviceStatusRow: View {
             paused: false,
             heapFree: nil,
             lastSnapshot: nil,
-            lastSnapshotAt: nil
+            lastSnapshotAt: nil,
+            deviceType: .trap,
+            activeAlert: nil,
+            muteOfflinePermanently: nil,
+            muteOfflineUntil: nil
         ))
 
         DeviceStatusRow(device: Device(
@@ -168,7 +210,11 @@ struct DeviceStatusRow: View {
             paused: false,
             heapFree: nil,
             lastSnapshot: nil,
-            lastSnapshotAt: nil
+            lastSnapshotAt: nil,
+            deviceType: .trap,
+            activeAlert: nil,
+            muteOfflinePermanently: nil,
+            muteOfflineUntil: nil
         ))
     }
     .padding()

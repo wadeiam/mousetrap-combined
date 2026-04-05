@@ -13,7 +13,7 @@ services:
       - ./mosquitto/log:/mosquitto/log:rw
     user: "1883:1883"
     healthcheck:
-      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3", "-u", "server_admin", "-P", "mqtt_admin_password"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -48,6 +48,11 @@ struct OfflineWarningSection: View {
 struct OfflineWarningCard: View {
     let device: Device
     let onDismiss: () -> Void
+    @ObservedObject private var lanService = LANDiscoveryService.shared
+
+    private var isLANReachable: Bool {
+        lanService.isReachable(deviceId: device.id)
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -56,9 +61,22 @@ struct OfflineWarningCard: View {
                 .foregroundStyle(.orange)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(device.displayName)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                HStack(spacing: 4) {
+                    Text(device.displayName)
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    if device.isOfflineAlertsMuted {
+                        Text("MUTED")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange)
+                            .clipShape(Capsule())
+                    }
+                }
 
                 if let lastSeen = device.lastSeen {
                     Text("Last seen \(lastSeen, style: .relative)")
@@ -68,6 +86,25 @@ struct OfflineWarningCard: View {
                     Text("Offline")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                if isLANReachable, let ip = lanService.ip(for: device.id) {
+                    Button {
+                        if let url = URL(string: "http://\(ip)/app/") {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.blue)
+                                .frame(width: 6, height: 6)
+                            Text("Available on LAN")
+                                .font(.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -122,7 +159,11 @@ struct OfflineWarningCard: View {
                     paused: false,
                     heapFree: nil,
                     lastSnapshot: nil,
-                    lastSnapshotAt: nil
+                    lastSnapshotAt: nil,
+                    deviceType: .trap,
+                    activeAlert: nil,
+                    muteOfflinePermanently: nil,
+                    muteOfflineUntil: nil
                 ),
                 Device(
                     id: "2",
@@ -145,7 +186,11 @@ struct OfflineWarningCard: View {
                     paused: false,
                     heapFree: nil,
                     lastSnapshot: nil,
-                    lastSnapshotAt: nil
+                    lastSnapshotAt: nil,
+                    deviceType: .trap,
+                    activeAlert: nil,
+                    muteOfflinePermanently: nil,
+                    muteOfflineUntil: nil
                 )
             ],
             dismissedDeviceIds: [],

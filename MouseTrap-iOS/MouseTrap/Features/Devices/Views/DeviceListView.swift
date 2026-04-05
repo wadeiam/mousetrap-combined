@@ -4,43 +4,75 @@ struct DeviceListView: View {
     @StateObject private var viewModel = DeviceListViewModel()
     @State private var searchText = ""
     @State private var selectedStatus: DeviceStatus?
+    @State private var selectedType: DeviceType?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Status Filter
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        FilterChip(
-                            title: "All",
-                            isSelected: selectedStatus == nil,
-                            action: { selectedStatus = nil }
-                        )
+                // Filters
+                VStack(spacing: 8) {
+                    // Type Filter
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            FilterChip(
+                                title: "All Types",
+                                isSelected: selectedType == nil,
+                                action: { selectedType = nil }
+                            )
 
-                        FilterChip(
-                            title: "Online",
-                            isSelected: selectedStatus == .online,
-                            color: .green,
-                            action: { selectedStatus = .online }
-                        )
+                            FilterChip(
+                                title: "Traps",
+                                icon: "sensor.fill",
+                                isSelected: selectedType == .trap,
+                                color: .orange,
+                                action: { selectedType = .trap }
+                            )
 
-                        FilterChip(
-                            title: "Alerting",
-                            isSelected: selectedStatus == .alerting,
-                            color: .red,
-                            action: { selectedStatus = .alerting }
-                        )
-
-                        FilterChip(
-                            title: "Offline",
-                            isSelected: selectedStatus == .offline,
-                            color: .gray,
-                            action: { selectedStatus = .offline }
-                        )
+                            FilterChip(
+                                title: "Scouts",
+                                icon: "video.fill",
+                                isSelected: selectedType == .scout,
+                                color: .cyan,
+                                action: { selectedType = .scout }
+                            )
+                        }
+                        .padding(.horizontal)
                     }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
+
+                    // Status Filter
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            FilterChip(
+                                title: "All Status",
+                                isSelected: selectedStatus == nil,
+                                action: { selectedStatus = nil }
+                            )
+
+                            FilterChip(
+                                title: "Online",
+                                isSelected: selectedStatus == .online,
+                                color: .green,
+                                action: { selectedStatus = .online }
+                            )
+
+                            FilterChip(
+                                title: "Alerting",
+                                isSelected: selectedStatus == .alerting,
+                                color: .red,
+                                action: { selectedStatus = .alerting }
+                            )
+
+                            FilterChip(
+                                title: "Offline",
+                                isSelected: selectedStatus == .offline,
+                                color: .gray,
+                                action: { selectedStatus = .offline }
+                            )
+                        }
+                        .padding(.horizontal)
+                    }
                 }
+                .padding(.vertical, 8)
                 .background(Color(.systemBackground))
 
                 // Device List
@@ -86,6 +118,13 @@ struct DeviceListView: View {
     private var filteredDevices: [Device] {
         var devices = viewModel.devices
 
+        // Filter by device type
+        if let type = selectedType {
+            devices = devices.filter {
+                type == .trap ? $0.isTrap : $0.isScout
+            }
+        }
+
         // Filter by status
         if let status = selectedStatus {
             devices = devices.filter { $0.status == status }
@@ -106,20 +145,27 @@ struct DeviceListView: View {
 
 struct FilterChip: View {
     let title: String
+    var icon: String? = nil
     let isSelected: Bool
     var color: Color = .blue
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.caption)
-                .fontWeight(.medium)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(isSelected ? color : Color(.systemGray5))
-                .foregroundStyle(isSelected ? .white : .primary)
-                .clipShape(Capsule())
+            HStack(spacing: 4) {
+                if let icon = icon {
+                    Image(systemName: icon)
+                        .font(.caption2)
+                }
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(isSelected ? color : Color(.systemGray5))
+            .foregroundStyle(isSelected ? .white : .primary)
+            .clipShape(Capsule())
         }
     }
 }
@@ -129,19 +175,41 @@ struct DeviceRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Status indicator
-            Circle()
-                .fill(statusColor)
-                .frame(width: 10, height: 10)
+            // Device type icon with status indicator
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: device.typeIcon)
+                    .font(.title2)
+                    .foregroundStyle(device.isTrap ? .orange : .cyan)
+                    .frame(width: 32, height: 32)
+
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 10, height: 10)
+                    .overlay(
+                        Circle()
+                            .stroke(Color(.systemBackground), lineWidth: 2)
+                    )
+                    .offset(x: 2, y: 2)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(device.displayName)
                     .font(.headline)
 
-                if let location = device.location {
-                    Text(location)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(device.isTrap ? "Trap" : "Scout")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(device.isTrap ? Color.orange.opacity(0.2) : Color.cyan.opacity(0.2))
+                        .foregroundStyle(device.isTrap ? .orange : .cyan)
+                        .clipShape(Capsule())
+
+                    if let location = device.location {
+                        Text(location)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 

@@ -3,6 +3,7 @@ import Foundation
 @MainActor
 class DeviceDetailViewModel: ObservableObject {
     @Published var snapshot: String?
+    @Published var snapshotAt: Date?
     @Published var isRequestingSnapshot = false
     @Published var isLoading = false
     @Published var error: String?
@@ -39,6 +40,7 @@ class DeviceDetailViewModel: ObservableObject {
 
             if let device = response.data, let snap = device.lastSnapshot {
                 snapshot = snap
+                snapshotAt = device.lastSnapshotAt ?? Date()
             }
 
         } catch let apiError as APIError {
@@ -118,6 +120,27 @@ class DeviceDetailViewModel: ObservableObject {
             )
 
             successMessage = "Test alert sent"
+
+        } catch let apiError as APIError {
+            error = apiError.errorDescription
+        } catch {
+            self.error = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    func toggleOfflineAlertsMuted(deviceId: String, currentlyMuted: Bool) async {
+        isLoading = true
+        error = nil
+
+        do {
+            let message = try await DeviceService.shared.setOfflineAlertsMuted(
+                deviceId: deviceId,
+                muted: !currentlyMuted,
+                duration: nil  // Permanent mute/unmute
+            )
+            successMessage = message
 
         } catch let apiError as APIError {
             error = apiError.errorDescription

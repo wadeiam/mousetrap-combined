@@ -1,5 +1,17 @@
 import Foundation
 
+enum DeviceType: String, Codable {
+    case trap
+    case scout
+}
+
+struct ActiveAlert: Codable {
+    let id: String
+    let triggeredAt: Date?
+    let snapshot: String?
+    let snapshotAt: Date?
+}
+
 struct Device: Codable, Identifiable {
     let id: String
     let mqttClientId: String
@@ -22,9 +34,25 @@ struct Device: Codable, Identifiable {
     let heapFree: Int?
     let lastSnapshot: String?
     let lastSnapshotAt: Date?
+    let deviceType: DeviceType?
+    let activeAlert: ActiveAlert?
+    let muteOfflinePermanently: Bool?
+    let muteOfflineUntil: Date?
 
     var displayName: String {
         name ?? label ?? mqttClientId
+    }
+
+    var isTrap: Bool {
+        deviceType == .trap || deviceType == nil  // Default to trap if not specified
+    }
+
+    var isScout: Bool {
+        deviceType == .scout
+    }
+
+    var typeIcon: String {
+        isScout ? "video.fill" : "sensor.fill"
     }
 
     var signalStrength: SignalStrength {
@@ -59,6 +87,17 @@ struct Device: Codable, Identifiable {
         case heapFree
         case lastSnapshot
         case lastSnapshotAt
+        case deviceType
+        case activeAlert
+        case muteOfflinePermanently
+        case muteOfflineUntil
+    }
+
+    /// Returns true if offline alerts are currently muted for this device
+    var isOfflineAlertsMuted: Bool {
+        if muteOfflinePermanently == true { return true }
+        if let muteUntil = muteOfflineUntil, muteUntil > Date() { return true }
+        return false
     }
 }
 

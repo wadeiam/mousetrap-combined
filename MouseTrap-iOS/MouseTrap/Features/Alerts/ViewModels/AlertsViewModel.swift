@@ -67,23 +67,14 @@ class AlertsViewModel: ObservableObject {
         do {
             struct AckResponse: Codable {
                 let success: Bool?
-                let data: Alert?
-                let alert: Alert?
             }
 
-            let response: AckResponse = try await apiClient.post(
+            let _: AckResponse = try await apiClient.post(
                 endpoint: .acknowledgeAlert(id: id)
             )
 
-            // Update local alert
-            if let updatedAlert = response.data ?? response.alert {
-                if let index = alerts.firstIndex(where: { $0.id == id }) {
-                    alerts[index] = updatedAlert
-                }
-            } else {
-                // Reload alerts if we didn't get the updated alert back
-                await loadAlerts()
-            }
+            // Reload alerts to get the updated state
+            await loadAlerts()
 
         } catch {
             self.error = (error as? APIError)?.errorDescription ?? error.localizedDescription
@@ -94,25 +85,20 @@ class AlertsViewModel: ObservableObject {
         do {
             struct ResolveResponse: Codable {
                 let success: Bool?
-                let data: Alert?
-                let alert: Alert?
             }
 
             let body = ResolveAlertRequest(notes: notes)
 
-            let response: ResolveResponse = try await apiClient.post(
+            let _: ResolveResponse = try await apiClient.post(
                 endpoint: .resolveAlert(id: id),
                 body: body
             )
 
-            // Update local alert
-            if let updatedAlert = response.data ?? response.alert {
-                if let index = alerts.firstIndex(where: { $0.id == id }) {
-                    alerts[index] = updatedAlert
-                }
-            } else {
-                await loadAlerts()
-            }
+            // Remove the resolved alert from local array immediately for instant UI feedback
+            alerts.removeAll { $0.id == id }
+
+            // Then reload to ensure we have fresh data
+            await loadAlerts()
 
         } catch {
             self.error = (error as? APIError)?.errorDescription ?? error.localizedDescription

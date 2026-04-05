@@ -11,8 +11,11 @@ class PushNotificationService: ObservableObject {
 
     private let apiClient = APIClient.shared
     private var deviceToken: String?
+    private let tokenKey = "pushDeviceToken"
 
     private init() {
+        // Restore token from UserDefaults if available
+        deviceToken = UserDefaults.standard.string(forKey: tokenKey)
         checkPermissionStatus()
     }
 
@@ -49,13 +52,18 @@ class PushNotificationService: ObservableObject {
     // MARK: - Token Registration
 
     func registerToken(_ token: String) async {
+        print("[Push] registerToken called with: \(token.prefix(20))...")
         self.deviceToken = token
+        // Persist token for next launch
+        UserDefaults.standard.set(token, forKey: tokenKey)
 
-        // Only register if authenticated
+        // Only register with server if authenticated
         guard KeychainService.shared.getAccessToken() != nil else {
+            print("[Push] Token saved locally, will register after login (no auth token)")
             return
         }
 
+        print("[Push] Auth token exists, sending to server...")
         do {
             struct RegisterRequest: Codable {
                 let token: String
@@ -107,8 +115,23 @@ class PushNotificationService: ObservableObject {
     // MARK: - Re-register on Login
 
     func onLogin() async {
+        print("[Push] onLogin called")
+        print("[Push] Current deviceToken: \(deviceToken?.prefix(20) ?? "nil")...")
+
+        // Re-request push registration in case token hasn't arrived yet
+        await MainActor.run {
+            print("[Push] Requesting remote notifications registration")
+            UIApplication.shared.registerForRemoteNotifications()
+        }
+
+        // Give iOS a moment to deliver the token
+        try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+
         if let token = deviceToken {
+            print("[Push] Registering token with server...")
             await registerToken(token)
+        } else {
+            print("[Push] No device token available yet, will register when received")
         }
     }
 

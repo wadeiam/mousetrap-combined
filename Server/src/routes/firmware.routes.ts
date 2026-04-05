@@ -53,7 +53,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const result = await dbPool.query(
       `SELECT
         id, tenant_id, version, type, url, size, sha256,
-        changelog, required, is_global, published_at, deprecated_at, created_at
+        changelog, required, is_global, device_type, published_at, deprecated_at, created_at
       FROM firmware_versions
       WHERE (tenant_id = $1 OR is_global = true) AND deprecated_at IS NULL
       ORDER BY published_at DESC`,
@@ -104,6 +104,15 @@ router.post('/', requireRole('admin', 'superadmin'), upload.single('file'), asyn
       });
     }
 
+    // Validate device_type if provided
+    const validDeviceTypes = ['scout', 'trap', null];
+    if (data.device_type && !validDeviceTypes.includes(data.device_type)) {
+      return res.status(400).json({
+        success: false,
+        error: 'device_type must be "scout", "trap", or null (for all devices)',
+      });
+    }
+
     // Save firmware file to disk
     const metadata = await firmwareStorage.saveFirmware({
       tenantId,
@@ -126,11 +135,11 @@ router.post('/', requireRole('admin', 'superadmin'), upload.single('file'), asyn
     // Insert firmware version record into database
     const result = await dbPool.query(
       `INSERT INTO firmware_versions
-        (tenant_id, version, type, url, size, sha256, changelog, required, is_global)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (tenant_id, version, type, url, size, sha256, changelog, required, is_global, device_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING
         id, tenant_id, version, type, url, size, sha256,
-        changelog, required, is_global, published_at, deprecated_at, created_at`,
+        changelog, required, is_global, device_type, published_at, deprecated_at, created_at`,
       [
         tenantId,
         data.version,
@@ -141,6 +150,7 @@ router.post('/', requireRole('admin', 'superadmin'), upload.single('file'), asyn
         data.changelog || null,
         data.required || false,
         data.is_global || false,
+        data.device_type || null,
       ]
     );
 
@@ -157,6 +167,7 @@ router.post('/', requireRole('admin', 'superadmin'), upload.single('file'), asyn
           sha256: firmwareRecord.sha256,
           changelog: firmwareRecord.changelog,
           required: firmwareRecord.required,
+          device_type: firmwareRecord.device_type,  // Include device_type for filtering
         };
 
         if (data.type === 'firmware') {
@@ -228,7 +239,7 @@ router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), as
 
     // Get existing firmware details
     const selectResult = await dbPool.query(
-      `SELECT id, tenant_id, version, type, url, size, sha256, is_global, required, changelog
+      `SELECT id, tenant_id, version, type, url, size, sha256, is_global, required, changelog, device_type
        FROM firmware_versions
        WHERE id = $1 AND tenant_id = $2`,
       [id, tenantId]
@@ -249,12 +260,22 @@ router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), as
     const newChangelog = data?.changelog !== undefined ? data.changelog : existingFirmware.changelog;
     const newRequired = data?.required !== undefined ? data.required : existingFirmware.required;
     const newIsGlobal = data?.is_global !== undefined ? data.is_global : existingFirmware.is_global;
+    const newDeviceType = data?.device_type !== undefined ? data.device_type : existingFirmware.device_type;
 
     // Validate type if changed
     if (newType !== 'firmware' && newType !== 'filesystem') {
       return res.status(400).json({
         success: false,
         error: 'Type must be either "firmware" or "filesystem"',
+      });
+    }
+
+    // Validate device_type if changed
+    const validDeviceTypes = ['scout', 'trap', null];
+    if (newDeviceType && !validDeviceTypes.includes(newDeviceType)) {
+      return res.status(400).json({
+        success: false,
+        error: 'device_type must be "scout", "trap", or null (for all devices)',
       });
     }
 
@@ -351,11 +372,11 @@ router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), as
     const updateResult = await dbPool.query(
       `UPDATE firmware_versions
        SET version = $1, type = $2, url = $3, size = $4, sha256 = $5,
-           changelog = $6, required = $7, is_global = $8, published_at = NOW()
-       WHERE id = $9
+           changelog = $6, required = $7, is_global = $8, device_type = $9, published_at = NOW()
+       WHERE id = $10
        RETURNING
         id, tenant_id, version, type, url, size, sha256,
-        changelog, required, is_global, published_at, deprecated_at, created_at`,
+        changelog, required, is_global, device_type, published_at, deprecated_at, created_at`,
       [
         newVersion,
         newType,
@@ -365,6 +386,7 @@ router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), as
         newChangelog,
         newRequired,
         newIsGlobal,
+        newDeviceType,
         id
       ]
     );
@@ -381,6 +403,7 @@ router.put('/:id', requireRole('admin', 'superadmin'), upload.single('file'), as
           sha256: updatedFirmware.sha256,
           changelog: updatedFirmware.changelog,
           required: updatedFirmware.required,
+          device_type: updatedFirmware.device_type,  // Include device_type for filtering
         };
 
         if (updatedFirmware.type === 'firmware') {

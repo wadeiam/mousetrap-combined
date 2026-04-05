@@ -12,11 +12,15 @@ import { DevicesScreen } from '../screens/DevicesScreen';
 import { DeviceDetailScreen } from '../screens/DeviceDetailScreen';
 import { AlertsScreen } from '../screens/AlertsScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { ConnectivityHistoryScreen } from '../screens/ConnectivityHistoryScreen';
+import { DeviceLogsScreen } from '../screens/DeviceLogsScreen';
 
 export type RootStackParamList = {
   Main: undefined;
   Login: undefined;
   DeviceDetail: { deviceId: string; deviceName?: string };
+  ConnectivityHistory: { deviceId: string; deviceName?: string };
+  DeviceLogs: { deviceId: string; deviceName?: string };
 };
 
 const Stack = createNativeStackNavigator();
@@ -133,6 +137,36 @@ export function AppNavigator() {
               component={DeviceDetailScreen}
               options={{
                 headerShown: true,
+                headerStyle: {
+                  backgroundColor: '#1a1a2e',
+                },
+                headerTintColor: '#fff',
+                headerTitleStyle: {
+                  fontWeight: '700',
+                },
+              }}
+            />
+            <Stack.Screen
+              name="ConnectivityHistory"
+              component={ConnectivityHistoryScreen}
+              options={{
+                headerShown: true,
+                title: 'Connectivity History',
+                headerStyle: {
+                  backgroundColor: '#1a1a2e',
+                },
+                headerTintColor: '#fff',
+                headerTitleStyle: {
+                  fontWeight: '700',
+                },
+              }}
+            />
+            <Stack.Screen
+              name="DeviceLogs"
+              component={DeviceLogsScreen}
+              options={{
+                headerShown: true,
+                title: 'Device Logs',
                 headerStyle: {
                   backgroundColor: '#1a1a2e',
                 },

@@ -1,7 +1,7 @@
 # MouseTrap Session Handoff
 
-**Last Updated:** 2025-12-06
-**Latest Session:** Scout Device Firmware & AI Classification Service
+**Last Updated:** 2026-01-19
+**Latest Session:** Scout Claim Code & MQTT Fix - WORKING
 
 ---
 
@@ -49,6 +49,11 @@ arduino-cli compile --fqbn esp32:esp32:esp32cam   # <-- WRONG BOARD
 - Always use `make upload-fs` for filesystem uploads
 - DO NOT use 0x370000 or any other address
 
+### USB SERIAL UPLOADS USE 115200 BAUD
+- The Makefile uses 115200 baud for reliable uploads
+- 921600 baud frequently causes "chip stopped responding" errors
+- If uploads fail, ensure you're using 115200 baud rate
+
 ---
 
 ## Persistent Operational Info
@@ -57,7 +62,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32cam   # <-- WRONG BOARD
 
 **Correct FQBN:**
 ```
-esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=921600,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
+esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=115200,DebugLevel=none,EraseFlash=none,USBMode=hwcdc
 ```
 
 **Commands:**
@@ -67,11 +72,11 @@ cd /Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino
 # Compile firmware (outputs to build/mousetrap_arduino.ino.bin)
 make compile
 
-# Upload firmware via serial (auto-detect port, 921600 baud)
+# Upload firmware via serial (115200 baud - reliable)
 make upload
 
-# Upload with lower baud rate (more reliable)
-arduino-cli upload -p /dev/cu.usbserial-10 --fqbn "esp32:esp32:esp32s3:..." -UploadSpeed=115200 .
+# Upload with higher baud rate (faster but may fail on some setups)
+arduino-cli upload -p /dev/cu.usbserial-10 --fqbn "esp32:esp32:esp32s3:..." --upload-option UploadSpeed=921600 .
 
 # Deploy firmware OTA (ALWAYS use build/ folder)
 curl -u "ops:changeme" -F "file=@build/mousetrap_arduino.ino.bin" http://192.168.133.46/update
@@ -120,11 +125,15 @@ curl -u "ops:changeme" -F "file=@build/littlefs.bin" http://192.168.133.46/uploa
 
 | Resource | Address |
 |----------|---------|
-| Server API | http://192.168.133.110:4000 |
-| Dashboard | http://192.168.133.110:5173 |
-| MQTT Broker | 192.168.133.110:1883 |
-| Kitchen Device | 192.168.133.46 |
+| Mac WiFi IP | 10.0.0.220 (DHCP reservation) |
+| Server API | http://mtmon.wadehargrove.com:4000 |
+| Dashboard | http://mtmon.wadehargrove.com:5173 |
+| MQTT Broker | mtmon.wadehargrove.com:1883 |
+| Kitchen Device | 10.0.0.180 |
 | Biggy Device Serial | /dev/cu.usbserial-10 |
+
+**DNS:** mtmon.wadehargrove.com → 76.132.161.59 (public IP, port-forwarded to Mac)
+**Router ports forwarded:** 1883 (MQTT), 4000 (API), 5173 (Dashboard) → 10.0.0.220
 
 ### Database
 
@@ -314,6 +323,14 @@ brew services start mosquitto
 - **Serial Port:** /dev/cu.usbserial-10
 - **Status:** Development/testing device
 - **AP SSID (unclaimed):** MouseTrap-5060
+
+### Pool Room Scout (Production)
+- **IP:** 192.168.133.58
+- **MAC:** 1C:DB:D4:99:30:CC
+- **Status:** Claimed to Master Tenant
+- **Firmware:** v0.1.1
+- **Type:** Scout (motion camera, no trap mechanism)
+- **Serial Port:** /dev/cu.usbserial-10
 
 ---
 
@@ -516,9 +533,211 @@ const API_BASE_URL = 'http://192.168.133.110:4000/api';
 
 ---
 
-## Current Session Notes (2025-12-06)
+## Current Session Notes (2026-01-19)
 
-### Latest Work: Scout Device Firmware & AI Classification Docker Service
+### Latest Work: Scout Claim Code & MQTT Fix - WORKING
+
+**Status:** COMPLETE - Scout can be claimed via dashboard codes, MQTT auto-connects on boot
+
+**What Was Fixed:**
+
+#### 1. Claim Code Support (Matching Trap)
+
+Scout previously only supported email/password registration. Added claim code flow:
+
+- Added `claimDevice(const String& claimCode)` function (line 581-658)
+- Added `/api/device/claim` endpoint accepting `{claimCode}` (line 2018-2055)
+- Server endpoint: `POST /api/devices/claim` with `{claimCode, deviceInfo}`
+
+#### 2. MQTT Auto-Connect Bug (CRITICAL FIX)
+
+**Original Bug:** MQTT never connected on boot despite all flags being correct.
+
+**Root Cause:** `mqttClient.setServer(broker.c_str(), MQTT_PORT)` stored a pointer to a local String that was destroyed after `mqttSetup()` returned. PubSubClient then had a dangling pointer.
+
+**Fix (line 879-903):**
+```cpp
+static char mqttBrokerAddress[128] = {0};  // Static buffer survives function scope
+strncpy(mqttBrokerAddress, broker.c_str(), sizeof(mqttBrokerAddress)-1);
+mqttClient.setServer(mqttBrokerAddress, MQTT_PORT);
+```
+
+#### 3. API Endpoint Compatibility
+
+Added missing endpoints for SPA compatibility:
+- `/api/system-logs` - Alias for `/api/logs`
+- `/api/mqtt/reconnect` - Debug endpoint for manual MQTT reconnect
+
+**Files Modified:** `scout_arduino/scout_arduino.ino`
+**Verified:** Pool Room Scout claimed as "Pool Room Scout", MQTT connected to 192.168.133.110
+
+---
+
+## Previous Session Notes (2025-12-21)
+
+### Previous Work: Scout Captive Portal & Registration - WORKING
+
+**Status:** COMPLETE - Scout captive portal auto-popups on iOS, WiFi scanning works, registration succeeds
+
+**What Was Fixed:**
+
+#### 1. Captive Portal Two-Level Redirect (Like Trap)
+
+The original bug was an infinite redirect loop. Fixed by implementing the exact same pattern as the Trap:
+
+```
+iOS request → /generate_204 → onNotFound redirects to /setup
+           → /setup redirects to /#/setup
+           → / SERVES index.html (HTTP 200!) ← Content delivered!
+           → SPA loads, hash router handles #/setup
+```
+
+**Key Changes:**
+- Added `/setup` route that redirects to `/#/setup`
+- Root `/` handler always serves `index.html` using `beginResponse()` pattern
+- Captive portal detection endpoints (`/generate_204`, `/hotspot-detect.html`, `/canonical.html`) redirect to `/setup`
+- `onNotFound` redirects to `/setup` in AP mode
+
+#### 2. Synchronous WiFi Scanning (Like Trap)
+
+Original bug: Async scanning returned `{"scanning":true}` immediately, SPA showed "No networks found" error.
+
+**Fix:** Implemented synchronous scanning with 4-attempt retry logic (matching Trap exactly):
+- Attempt 1: Standard scan with 500ms dwell
+- Attempt 2: Active scan with 1000ms dwell
+- Attempt 3: Disconnect STA, retry 800ms
+- Attempt 4: Switch to STA-only mode, scan, restore AP
+
+**AP Restoration:** After any scan, AP mode is fully restored with correct IP (192.168.4.1).
+
+**API Response:** Always returns `{"scanning":false, "networks":[...]}` with actual results.
+
+#### 3. MAC Address Format Fix
+
+Original bug: `getMacAddress()` returned without colons (`1CDBD49930CC`), but server expected with colons (`1C:DB:D4:99:30:CC`). This caused 400 errors on registration.
+
+**Fix:**
+- `getMacAddress()` now returns with colons (for server API calls)
+- Added `getMacAddressNoColons()` for MQTT client ID
+
+#### 4. Removed Early Boot Scan
+
+Original bug: Calling `startWiFiScan()` at boot (before AP fully stabilized) broke AP mode.
+
+**Fix:** Removed early boot scan. WiFi scan happens on-demand when SPA calls `/api/wifi/scan`.
+
+---
+
+### Flash Procedure (After Erase)
+
+**IMPORTANT:** After `erase_flash`, must flash ALL components:
+
+```bash
+cd /Users/wadehargrove/Documents/MouseTrap/scout_arduino
+
+# Compile with export to get all binaries
+arduino-cli compile --fqbn "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=custom,CPUFreq=240,FlashMode=qio,UploadSpeed=921600,DebugLevel=none,EraseFlash=none,USBMode=hwcdc" --export-binaries .
+
+# Build filesystem
+make build-fs
+
+# Flash everything (bootloader + partitions + firmware + filesystem)
+esptool --chip esp32s3 --port /dev/cu.usbserial-10 --baud 115200 write_flash \
+  0x0 build/esp32.esp32.esp32s3/scout_arduino.ino.bootloader.bin \
+  0x8000 build/esp32.esp32.esp32s3/scout_arduino.ino.partitions.bin \
+  0x10000 build/esp32.esp32.esp32s3/scout_arduino.ino.bin \
+  0x510000 build/littlefs.bin
+```
+
+If you only flash firmware after erase, you'll see `invalid header: 0xffffffff` errors.
+
+---
+
+### Files Modified
+
+- `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/scout_arduino.ino`:
+  - Lines 232-250: `getMacAddress()` with colons, `getMacAddressNoColons()` without
+  - Lines 389-497: Synchronous WiFi scanning with 4-attempt retry and AP restoration
+  - Lines 1330-1340: Root handler serves SPA using `beginResponse()`
+  - Lines 1342-1358: `/setup` route and captive portal detection endpoints
+  - Lines 1430-1461: `/api/wifi/scan` returns synchronous results
+  - Lines 1911-1926: `onNotFound` redirects to `/setup`
+  - Lines 2109-2111: Removed early boot scan
+
+---
+
+### Testing Verified
+
+1. Connect iPhone to `Scout-XXXXXX` → Captive portal auto-popups ✓
+2. Click "Get Started" → WiFi networks appear immediately ✓
+3. Select network, enter password → WiFi connects ✓
+4. Create account or sign in → Registration succeeds ✓
+5. Device connects to MQTT and goes online ✓
+
+---
+
+## Previous Session Notes (2025-12-20)
+
+### Previous Work: iOS App Device Controls & MQTT Settings Commands
+
+**Status:** Complete - Both Trap and Scout firmware updated with MQTT settings handlers, iOS app has device control UI sections
+
+**What Was Implemented:**
+
+#### 1. MQTT Settings Command Handlers (Trap Firmware)
+
+Added remote device configuration via MQTT commands in `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/mousetrap_arduino.ino`:
+
+**New Commands Supported:**
+- `get_camera_settings` / `set_camera_settings` - Camera brightness, contrast, quality, flip/mirror
+- `get_calibration` / `set_calibration` - Threshold offset and override
+- `recalibrate` - Trigger auto-recalibration
+- `get_servo_settings` / `set_servo_settings` - Servo start/end positions, disable toggle
+- `test_servo` - Trigger servo test
+
+**Response Pattern:**
+- Device publishes response to `tenant/{tenantId}/device/{macAddress}/settings`
+- Includes `requestId` for request/response matching
+- Returns current settings after changes
+
+#### 2. MQTT Settings Command Handlers (Scout Firmware)
+
+Added matching handlers in `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/scout_arduino.ino`:
+
+**New Commands Supported:**
+- `get_camera_settings` / `set_camera_settings` - Same as Trap
+- `get_motion_config` / `set_motion_config` - Motion detection threshold, size filters, cooldown
+
+#### 3. Server MQTT Settings Handler
+
+Updated `/Users/wadehargrove/Documents/MouseTrap/Server/src/services/mqtt.service.ts`:
+- Added topic subscription: `tenant/+/device/+/settings`
+- Added `device_settings` type to ParsedTopic
+- Added `handleDeviceSettings()` to emit settings responses for iOS app
+
+Updated `/Users/wadehargrove/Documents/MouseTrap/Server/src/types/mqtt.types.ts`:
+- Extended `DeviceCommandMessage` with all settings command types
+- Added optional fields: `settings`, `calibrationOffset`, `overrideThreshold`, `startUS`, `endUS`, `disabled`, `threshold`, `minSize`, `maxSize`
+
+#### 4. iOS App Device Settings UI (Previous Session)
+
+Created device control sections in the iOS app:
+- `CameraSettingsSection.swift` - Expandable camera controls
+- `CalibrationSection.swift` - Trap-only calibration controls
+- `ServoSettingsSection.swift` - Trap-only servo controls
+- `MotionConfigSection.swift` - Scout-only motion detection settings
+- Updated `DeviceDetailView.swift` to show appropriate sections per device type
+
+**Device Type Filtering:**
+- Added `DeviceType` enum (trap/scout) to Device model
+- Device list shows appropriate icons per type
+- Settings sections conditional on device type
+
+---
+
+## Previous Session Notes (2025-12-06)
+
+### Scout Device Firmware & AI Classification Docker Service
 
 **Status:** Complete - Scout device project created, AI classification Docker container deployed, MQTT integration complete
 
@@ -1306,8 +1525,9 @@ triggerTestAlert(deviceId: string): Promise<ApiResponse<{ alertId: string; messa
 - [ ] Mobile app: Configure EAS project ID (`eas init`) - requires Apple Developer account
 - [ ] Mobile app: Build for physical devices and test push notifications
 - [ ] Mobile app: Set up TestFlight and Play Store internal testing
-- [ ] **Scout: Test firmware on ESP32-S3-CAM hardware** - Compile, upload, verify motion detection
+- [x] **Scout: Captive portal and registration** - WORKING (2025-12-21)
 - [ ] **Scout: Add scout device type to dashboard** - Display scout devices alongside traps
+- [ ] **Scout: Test motion detection** - Verify camera motion detection works correctly
 
 ### Known Issues
 

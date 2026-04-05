@@ -2,12 +2,32 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var socketManager: SocketIOManager
     @StateObject private var viewModel = DashboardViewModel()
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
+                    // 0. Server Connectivity Warning (CRITICAL - shows first)
+                    if socketManager.serverUnreachable {
+                        ServerConnectivityBanner(
+                            lastAttempt: socketManager.lastConnectionAttempt,
+                            lanReachableCount: LANDiscoveryService.shared.lanReachableCount,
+                            onRetry: {
+                                if let tenantId = authManager.currentTenant?.tenantId {
+                                    socketManager.disconnect()
+                                    socketManager.connect(tenantId: tenantId)
+                                }
+                            }
+                        )
+                    }
+
+                    // 0b. Cached data banner
+                    if viewModel.isUsingCachedData {
+                        CachedDataBanner(cacheAge: viewModel.cacheAge)
+                    }
+
                     // Tenant Name (right-aligned)
                     if let tenant = authManager.currentTenant {
                         HStack {
@@ -43,11 +63,19 @@ struct DashboardView: View {
 
                     // 3. All Clear Message (when no alerts and no warnings)
                     if !viewModel.hasActiveAlerts && !viewModel.hasOfflineWarnings && viewModel.stats != nil {
-                        AllClearBanner()
+                        AllClearBanner(isConnected: socketManager.isConnected)
                     }
 
                     // 4. Device Status List (always shown)
                     DeviceStatusList(devices: viewModel.devices)
+
+                    // 5. Scout Activity Section (if scouts exist)
+                    if let scoutStats = viewModel.stats?.scoutStats, scoutStats.total > 0 {
+                        ScoutActivitySection(
+                            scoutStats: scoutStats,
+                            recentEvents: viewModel.stats?.recentMotionEvents ?? []
+                        )
+                    }
                 }
                 .padding(.vertical)
             }
@@ -80,6 +108,8 @@ struct DashboardView: View {
 // MARK: - Supporting Views
 
 struct AllClearBanner: View {
+    var isConnected: Bool = true
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "checkmark.seal.fill")
@@ -97,6 +127,16 @@ struct AllClearBanner: View {
             }
 
             Spacer()
+
+            // Connection indicator
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(isConnected ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(isConnected ? "Live" : "Reconnecting...")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding()
         .background(
@@ -104,6 +144,53 @@ struct AllClearBanner: View {
                 .fill(Color.green.opacity(0.1))
         )
         .padding(.horizontal)
+    }
+}
+
+struct CachedDataBanner: View {
+    let cacheAge: TimeInterval?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Showing cached data")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+
+                if let age = cacheAge {
+                    Text("Last updated \(formatAge(age))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal)
+    }
+
+    private func formatAge(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds) / 60
+        let hours = minutes / 60
+        let days = hours / 24
+
+        if days > 0 { return "\(days)d ago" }
+        if hours > 0 { return "\(hours)h ago" }
+        if minutes > 0 { return "\(minutes)m ago" }
+        return "just now"
     }
 }
 

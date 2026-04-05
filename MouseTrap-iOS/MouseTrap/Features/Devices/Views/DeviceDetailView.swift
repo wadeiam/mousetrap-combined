@@ -3,8 +3,11 @@ import SwiftUI
 struct DeviceDetailView: View {
     let device: Device
     @StateObject private var viewModel = DeviceDetailViewModel()
+    @StateObject private var settingsViewModel = DeviceSettingsViewModel()
+    @ObservedObject private var lanService = LANDiscoveryService.shared
     @State private var showingRebootConfirm = false
     @State private var showingSnapshot = false
+    @State private var hasRequestedAutoCapture = false
 
     var body: some View {
         ScrollView {
@@ -34,8 +37,60 @@ struct DeviceDetailView: View {
                                 StatItem(icon: "clock", value: formatUptime(uptime), label: "Uptime")
                             }
                             if let ip = device.localIp {
-                                StatItem(icon: "network", value: ip, label: "IP")
+                                let lanIcon = lanService.isReachable(deviceId: device.id) ? "network" : "network.slash"
+                                Link(destination: URL(string: "http://\(ip)/app/")!) {
+                                    StatItem(icon: lanIcon, value: ip, label: "IP")
+                                }
+                                .buttonStyle(.plain)
                             }
+                        }
+                    }
+
+                    // LAN access banner for offline devices
+                    if device.status != .online, lanService.isReachable(deviceId: device.id),
+                       let ip = lanService.ip(for: device.id) {
+                        Button {
+                            if let url = URL(string: "http://\(ip)/app/") {
+                                UIApplication.shared.open(url)
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "network")
+                                    .font(.title3)
+                                    .foregroundStyle(.blue)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Device Available on LAN")
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.primary)
+                                    Text("Server is unreachable, but this device is accessible at \(ip)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "arrow.up.right.square")
+                                    .foregroundStyle(.blue)
+                            }
+                            .padding()
+                            .background(Color.blue.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.blue.opacity(0.3), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    } else if device.status != .online, let ip = device.localIp {
+                        // Show IP even when offline (but not LAN reachable)
+                        HStack(spacing: 20) {
+                            let lanIcon = lanService.isReachable(deviceId: device.id) ? "network" : "network.slash"
+                            Link(destination: URL(string: "http://\(ip)/app/")!) {
+                                StatItem(icon: lanIcon, value: ip, label: "IP")
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -46,8 +101,18 @@ struct DeviceDetailView: View {
                 // Snapshot Section
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("Latest Snapshot")
-                            .font(.headline)
+                        // Show "Alert Snapshot" if there's an active alert with snapshot
+                        if let alert = device.activeAlert, alert.snapshot != nil {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.red)
+                                Text("Alert Snapshot")
+                                    .font(.headline)
+                            }
+                        } else {
+                            Text("Latest Snapshot")
+                                .font(.headline)
+                        }
                         Spacer()
                         if device.status == .online {
                             Button {
@@ -70,33 +135,161 @@ struct DeviceDetailView: View {
                         }
                     }
 
-                    if let snapshot = viewModel.snapshot ?? device.lastSnapshot,
+                    // Priority: 1. Alert snapshot, 2. ViewModel snapshot, 3. Device's lastSnapshot
+                    if let alertSnapshot = device.activeAlert?.snapshot,
+                       let imageData = Data(base64Encoded: alertSnapshot),
+                       let uiImage = UIImage(data: imageData) {
+                        // Show alert snapshot
+                        VStack(spacing: 8) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(alignment: .topTrailing) {
+                                    Text("ALERT")
+                                        .font(.caption2)
+                                        .fontWeight(.bold)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(.red)
+                                        .clipShape(Capsule())
+                                        .padding(8)
+                                }
+                                .onTapGesture {
+                                    showingSnapshot = true
+                                }
+                            if let snapshotAt = device.activeAlert?.snapshotAt {
+                                Text(snapshotAt, style: .date) + Text(" at ") + Text(snapshotAt, style: .time)
+                            } else if let triggeredAt = device.activeAlert?.triggeredAt {
+                                Text(triggeredAt, style: .date) + Text(" at ") + Text(triggeredAt, style: .time)
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else if let snapshot = viewModel.snapshot ?? device.lastSnapshot,
                        let imageData = Data(base64Encoded: snapshot),
                        let uiImage = UIImage(data: imageData) {
-                        Image(uiImage: uiImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .onTapGesture {
-                                showingSnapshot = true
+                        // Show latest snapshot
+                        VStack(spacing: 8) {
+                            Image(uiImage: uiImage)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .onTapGesture {
+                                    showingSnapshot = true
+                                }
+                            if let snapshotAt = viewModel.snapshotAt ?? device.lastSnapshotAt {
+                                Text(snapshotAt, style: .date) + Text(" at ") + Text(snapshotAt, style: .time)
                             }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     } else {
                         RoundedRectangle(cornerRadius: 12)
                             .fill(Color(.systemGray5))
                             .aspectRatio(4/3, contentMode: .fit)
                             .overlay {
                                 VStack {
-                                    Image(systemName: "photo")
-                                        .font(.largeTitle)
-                                        .foregroundStyle(.secondary)
-                                    Text("No snapshot available")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                    if viewModel.isRequestingSnapshot {
+                                        ProgressView()
+                                            .scaleEffect(1.5)
+                                        Text("Capturing...")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.top, 8)
+                                    } else {
+                                        Image(systemName: "photo")
+                                            .font(.largeTitle)
+                                            .foregroundStyle(.secondary)
+                                        Text("No snapshot available")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                     }
                 }
                 .padding()
+                .background(Color(.systemGray6))
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .onAppear {
+                    // Auto-capture if: online, no alert snapshot, and no recent snapshot (>10s)
+                    guard device.status == .online,
+                          !hasRequestedAutoCapture,
+                          device.activeAlert?.snapshot == nil else { return }
+
+                    let needsCapture: Bool
+                    if let snapshotAt = device.lastSnapshotAt {
+                        // Capture if last snapshot is older than 10 seconds
+                        needsCapture = Date().timeIntervalSince(snapshotAt) > 10
+                    } else {
+                        // No snapshot at all - capture
+                        needsCapture = true
+                    }
+
+                    if needsCapture {
+                        hasRequestedAutoCapture = true
+                        Task {
+                            await viewModel.requestSnapshot(deviceId: device.id)
+                        }
+                    }
+                }
+
+                // Device Settings Section
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: device.typeIcon)
+                            .foregroundStyle(.blue)
+                        Text("Device Settings")
+                            .font(.headline)
+                        Spacer()
+                        Text(device.isTrap ? "Trap" : "Scout")
+                            .font(.caption)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(device.isTrap ? Color.orange.opacity(0.2) : Color.cyan.opacity(0.2))
+                            .foregroundStyle(device.isTrap ? .orange : .cyan)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.horizontal)
+                    .padding(.top)
+
+                    // Camera settings (all devices)
+                    CameraSettingsSection(
+                        deviceId: device.id,
+                        isOnline: device.status == .online,
+                        viewModel: settingsViewModel
+                    )
+                    .padding(.horizontal)
+
+                    if device.isTrap {
+                        // Calibration (trap only)
+                        CalibrationSection(
+                            deviceId: device.id,
+                            isOnline: device.status == .online,
+                            viewModel: settingsViewModel
+                        )
+                        .padding(.horizontal)
+
+                        // Servo settings (trap only)
+                        ServoSettingsSection(
+                            deviceId: device.id,
+                            isOnline: device.status == .online,
+                            viewModel: settingsViewModel
+                        )
+                        .padding(.horizontal)
+                    } else if device.isScout {
+                        // Motion config (scout only)
+                        MotionConfigSection(
+                            deviceId: device.id,
+                            isOnline: device.status == .online,
+                            viewModel: settingsViewModel
+                        )
+                        .padding(.horizontal)
+                    }
+                }
+                .padding(.bottom)
                 .background(Color(.systemGray6))
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
@@ -109,6 +302,23 @@ struct DeviceDetailView: View {
 
                     if let mac = device.macAddress {
                         InfoRow(label: "MAC Address", value: mac)
+                    }
+
+                    if let ip = device.localIp {
+                        HStack {
+                            Text("IP Address")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Link(destination: URL(string: "http://\(ip)/app/")!) {
+                                HStack(spacing: 4) {
+                                    Text(ip)
+                                        .fontWeight(.medium)
+                                    Image(systemName: "arrow.up.right.square")
+                                        .font(.caption)
+                                }
+                            }
+                        }
+                        .font(.subheadline)
                     }
 
                     if let firmware = device.firmwareVersion {
@@ -172,6 +382,40 @@ struct DeviceDetailView: View {
                         .foregroundStyle(.primary)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
+
+                    // Mute/Unmute offline alerts
+                    Button {
+                        Task {
+                            await viewModel.toggleOfflineAlertsMuted(deviceId: device.id, currentlyMuted: device.isOfflineAlertsMuted)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: device.isOfflineAlertsMuted ? "bell.fill" : "bell.slash.fill")
+                            Text(device.isOfflineAlertsMuted ? "Unmute Offline Alerts" : "Mute Offline Alerts")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(device.isOfflineAlertsMuted ? Color.green.opacity(0.2) : Color(.systemGray5))
+                        .foregroundStyle(device.isOfflineAlertsMuted ? .green : .primary)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    // Show mute status if muted
+                    if device.isOfflineAlertsMuted {
+                        HStack {
+                            Image(systemName: "info.circle")
+                                .foregroundStyle(.secondary)
+                            if device.muteOfflinePermanently == true {
+                                Text("Offline alerts permanently muted")
+                            } else if let muteUntil = device.muteOfflineUntil {
+                                Text("Muted until \(muteUntil, style: .date) \(muteUntil, style: .time)")
+                            }
+                            Spacer()
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 4)
+                    }
                 }
             }
             .padding()
@@ -197,12 +441,21 @@ struct DeviceDetailView: View {
                 Text(message)
             }
         }
+        .alert("Settings Applied", isPresented: .constant(settingsViewModel.successMessage != nil)) {
+            Button("OK") {
+                settingsViewModel.successMessage = nil
+            }
+        } message: {
+            if let message = settingsViewModel.successMessage {
+                Text(message)
+            }
+        }
     }
 
     private var statusColor: Color {
         switch device.status {
         case .online: return .green
-        case .offline: return .gray
+        case .offline: return lanService.isReachable(deviceId: device.id) ? .blue : .gray
         case .alerting: return .red
         case .error: return .red
         case .maintenance: return .orange
@@ -282,7 +535,11 @@ struct InfoRow: View {
             paused: false,
             heapFree: 150000,
             lastSnapshot: nil,
-            lastSnapshotAt: nil
+            lastSnapshotAt: nil,
+            deviceType: .trap,
+            activeAlert: nil,
+            muteOfflinePermanently: nil,
+            muteOfflineUntil: nil
         ))
     }
 }

@@ -25,10 +25,41 @@ You are responsible for maintaining all project documentation:
 
 ## Key Locations
 
-- **Server:** `/Users/wadehargrove/Documents/MouseTrap/Server/`
-- **Trap Firmware:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/`
-- **Scout Firmware:** `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/`
-- **Dashboard:** `/Users/wadehargrove/Documents/MouseTrap/trap-dashboard/`
-- **Mobile App:** `/Users/wadehargrove/Documents/MouseTrap/mobile-app/`
-- **Trap SPA:** `/Users/wadehargrove/Documents/MouseTrap/mousetrap_arduino/trap-spa/`
-- **Scout SPA:** `/Users/wadehargrove/Documents/MouseTrap/scout_arduino/scout-spa/`
+- **Server:** `/Volumes/External2TB/Documents/MouseTrap/Server/`
+- **Trap Firmware:** `/Volumes/External2TB/Documents/MouseTrap/mousetrap_arduino/`
+- **Scout Firmware:** `/Volumes/External2TB/Documents/MouseTrap/scout_arduino/`
+- **Dashboard:** `/Volumes/External2TB/Documents/server-deployment/trap-dashboard/`
+- **Mobile App:** `/Volumes/External2TB/Documents/MouseTrap/mobile-app/`
+- **Trap SPA:** `/Volumes/External2TB/Documents/MouseTrap/mousetrap_arduino/trap-spa/`
+- **Scout SPA:** `/Volumes/External2TB/Documents/MouseTrap/scout_arduino/scout-spa/`
+
+## How to Start Services
+
+```bash
+# MQTT Broker (Docker)
+cd /Volumes/External2TB/Documents/MouseTrap/Server && docker compose up -d mosquitto
+
+# API Server (PM2)
+pm2 start /Volumes/External2TB/Documents/MouseTrap/Server/dist/server.js --name mqtt-server
+
+# Dashboard (PM2)
+cd /Volumes/External2TB/Documents/server-deployment/trap-dashboard && pm2 start "npx vite --host 0.0.0.0" --name trap-dashboard
+
+# Classification Service (Docker)
+cd /Volumes/External2TB/Documents/MouseTrap/classification-service && docker compose up -d
+
+# Save PM2 so services survive reboot
+pm2 save
+```
+
+## Network Info
+
+| Service | Port | URL |
+|---------|------|-----|
+| API Server | 4000 | http://mtmon.wadehargrove.com:4000 |
+| Dashboard | 5173 | http://mtmon.wadehargrove.com:5173 |
+| MQTT Broker | 1883 | mqtt://mtmon.wadehargrove.com:1883 |
+| Classification | 3100 | http://localhost:3100 |
+
+**Mac WiFi IP:** 10.0.0.220 (DHCP reservation set)
+**DNS:** mtmon.wadehargrove.com → 76.132.161.59 (public IP, port-forwarded to Mac)

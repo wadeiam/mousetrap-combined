@@ -2,7 +2,7 @@ import Foundation
 
 enum APIEndpoint {
     // Base URL - change this for production
-    static let baseURL = "http://192.168.133.110:4000/api"
+    static let baseURL = "http://10.0.0.220:4000/api"
 
     // Auth
     case login
@@ -25,6 +25,15 @@ enum APIEndpoint {
     case firmwareUpdate(deviceId: String)
     case clearAlerts(deviceId: String)
     case testAlert(deviceId: String)
+    case muteOfflineAlerts(deviceId: String)
+
+    // Device Controls
+    case cameraSettings(deviceId: String)
+    case calibration(deviceId: String)
+    case recalibrate(deviceId: String)
+    case servoSettings(deviceId: String)
+    case testServo(deviceId: String)
+    case motionConfig(deviceId: String)
 
     // Alerts
     case alerts
@@ -68,6 +77,15 @@ enum APIEndpoint {
         case .firmwareUpdate(let id): return "/devices/\(id)/firmware-update"
         case .clearAlerts(let id): return "/devices/\(id)/clear-alerts"
         case .testAlert(let id): return "/devices/\(id)/test-alert"
+        case .muteOfflineAlerts(let id): return "/devices/\(id)/mute-offline"
+
+        // Device Controls
+        case .cameraSettings(let id): return "/devices/\(id)/camera-settings"
+        case .calibration(let id): return "/devices/\(id)/calibration"
+        case .recalibrate(let id): return "/devices/\(id)/recalibrate"
+        case .servoSettings(let id): return "/devices/\(id)/servo-settings"
+        case .testServo(let id): return "/devices/\(id)/test-servo"
+        case .motionConfig(let id): return "/devices/\(id)/motion-config"
 
         // Alerts
         case .alerts: return "/alerts"

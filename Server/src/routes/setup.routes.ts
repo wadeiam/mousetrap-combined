@@ -8,6 +8,21 @@ import { syncMqttDevice } from '../utils/mqtt-auth';
 import { logger } from '../services/logger.service';
 
 /**
+ * Extract just the hostname from an MQTT broker URL.
+ * Firmware expects hostname only (e.g., "mtmon.wadehargrove.com"), not the full URL.
+ * Input: "mqtt://mtmon.wadehargrove.com:1883" or "mtmon.wadehargrove.com"
+ * Output: "mtmon.wadehargrove.com"
+ */
+function getMqttBrokerHost(): string {
+  const brokerUrl = process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883';
+  // Remove protocol prefix (mqtt://, mqtts://, tcp://, etc.)
+  let host = brokerUrl.replace(/^[a-z]+:\/\//, '');
+  // Remove port suffix
+  host = host.replace(/:\d+$/, '');
+  return host;
+}
+
+/**
  * Clear any retained revoke message for a device on the MQTT broker.
  * This prevents newly claimed devices from receiving old revoke messages
  * from previous unclaims.
@@ -529,7 +544,7 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
             mqttClientId,
             mqttUsername,
             mqttPassword, // Plain text password for device to store
-            mqttBrokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://192.168.133.110:1883',
+            mqttBrokerUrl: process.env.MQTT_BROKER_URL || 'mqtt://localhost:1883',
           },
           jwt: accessToken,
           refreshToken,
@@ -538,7 +553,7 @@ router.post('/register-and-claim', async (req: Request, res: Response) => {
         deviceId,
         tenantId,
         mqttClientId,
-        mqttBroker: process.env.MQTT_BROKER_URL || 'mqtt://192.168.133.110:1883',
+        mqttBroker: getMqttBrokerHost(),
         mqttCredentials: {
           username: mqttUsername,
           password: mqttPassword,
@@ -696,7 +711,7 @@ router.post('/recover-claim', async (req: Request, res: Response) => {
       deviceId: device.id,
       tenantId: device.tenant_id,
       mqttClientId,
-      mqttBroker: process.env.MQTT_BROKER_URL || 'mqtt://192.168.133.110:1883',
+      mqttBroker: getMqttBrokerHost(),
       mqttCredentials: {
         username: device.mqtt_username,
         password: mqttPassword,

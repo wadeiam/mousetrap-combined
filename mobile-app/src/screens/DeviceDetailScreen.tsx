@@ -10,10 +10,13 @@ import {
   Platform,
   Image,
   Alert,
+  Linking,
 } from 'react-native';
 import { useFocusEffect, useNavigation, useRoute, RouteProp } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { api } from '../services/api';
 import { Device } from '../types';
+import { RootStackParamList } from '../navigation/AppNavigator';
 
 type RouteParams = {
   DeviceDetail: {
@@ -23,7 +26,7 @@ type RouteParams = {
 };
 
 export function DeviceDetailScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RouteParams, 'DeviceDetail'>>();
   const { deviceId, deviceName } = route.params;
 
@@ -339,9 +342,21 @@ export function DeviceDetailScreen() {
           {device.ip_address && (
             <View style={styles.infoRow}>
               <Text style={styles.infoLabel}>IP Address</Text>
-              <Text style={[styles.infoValue, styles.mono]}>{device.ip_address}</Text>
+              <TouchableOpacity
+                onPress={() => Linking.openURL(`http://${device.ip_address}`)}
+                style={styles.linkContainer}
+              >
+                <Text style={[styles.infoValue, styles.mono, styles.link]}>
+                  {device.ip_address}
+                </Text>
+                <Text style={styles.linkIcon}>↗</Text>
+              </TouchableOpacity>
             </View>
           )}
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>MAC Address</Text>
+            <Text style={[styles.infoValue, styles.mono]}>{device.mac_address}</Text>
+          </View>
         </View>
       </View>
 
@@ -355,10 +370,16 @@ export function DeviceDetailScreen() {
               <Text style={styles.infoValue}>{device.firmware_version}</Text>
             </View>
           )}
-          <View style={styles.infoRow}>
+          <TouchableOpacity
+            style={styles.infoRow}
+            onPress={() => navigation.navigate('ConnectivityHistory' as any, { deviceId, deviceName: device.name })}
+          >
             <Text style={styles.infoLabel}>Uptime</Text>
-            <Text style={styles.infoValue}>{formatUptime(device.uptime)}</Text>
-          </View>
+            <View style={styles.tappableValue}>
+              <Text style={styles.infoValue}>{formatUptime(device.uptime)}</Text>
+              <Text style={styles.chevron}>›</Text>
+            </View>
+          </TouchableOpacity>
           {device.battery_level !== null && device.battery_level !== undefined && (
             <View style={styles.infoRow}>
               <Text style={styles.infoLabel}>Battery</Text>
@@ -393,6 +414,23 @@ export function DeviceDetailScreen() {
               </Text>
             </View>
           )}
+        </View>
+      </View>
+
+      {/* Diagnostics */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Diagnostics</Text>
+        <View style={styles.card}>
+          <TouchableOpacity
+            style={styles.infoRow}
+            onPress={() => navigation.navigate('DeviceLogs' as any, { deviceId, deviceName: device.name })}
+          >
+            <Text style={styles.infoLabel}>Device Logs</Text>
+            <View style={styles.tappableValue}>
+              <Text style={styles.infoValue}>View</Text>
+              <Text style={styles.chevron}>›</Text>
+            </View>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -630,8 +668,35 @@ const styles = StyleSheet.create({
   mono: {
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
   },
+  link: {
+    color: '#4fc3f7',
+    textDecorationLine: 'underline',
+  },
+  linkContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  linkIcon: {
+    color: '#4fc3f7',
+    fontSize: 14,
+    marginLeft: 4,
+  },
   lowValue: {
     color: '#f44336',
+  },
+  tappableValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  chevron: {
+    color: '#888',
+    fontSize: 20,
+    marginLeft: 8,
+    fontWeight: '300',
   },
   actionsContainer: {
     flexDirection: 'row',

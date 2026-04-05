@@ -7,6 +7,15 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        // Clear stale keychain data on fresh install
+        // UserDefaults is cleared on uninstall, Keychain is not
+        let hasLaunchedKey = "hasLaunchedBefore"
+        if !UserDefaults.standard.bool(forKey: hasLaunchedKey) {
+            print("[App] Fresh install detected - clearing keychain")
+            KeychainService.shared.clearAll()
+            UserDefaults.standard.set(true, forKey: hasLaunchedKey)
+        }
+
         // Set notification delegate
         UNUserNotificationCenter.current().delegate = self
 
@@ -64,7 +73,8 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         // Show notification even when app is in foreground
-        completionHandler([.banner, .badge, .sound])
+        // Include .list to add to Notification Center
+        completionHandler([.banner, .badge, .sound, .list])
     }
 
     // Handle notification tap

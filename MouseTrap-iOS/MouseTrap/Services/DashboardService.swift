@@ -46,7 +46,9 @@ class DashboardService {
             alertingDevices: response.alertingDevices ?? 0,
             activeAlerts: response.activeAlerts ?? 0,
             criticalAlerts: response.criticalAlerts ?? 0,
-            recentAlerts: response.recentAlerts
+            recentAlerts: response.recentAlerts,
+            scoutStats: nil,
+            recentMotionEvents: nil
         )
     }
 }

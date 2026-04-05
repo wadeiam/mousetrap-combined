@@ -80,6 +80,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           a.acknowledged_by as "acknowledgedBy",
           a.resolved_at as "resolvedAt",
           a.resolved_by as "resolvedBy",
+          a.notes,
           a.tenant_id as "tenantId",
           t.name as "tenantName",
           d.id as "deviceId",
@@ -104,6 +105,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           a.acknowledged_by as "acknowledgedBy",
           a.resolved_at as "resolvedAt",
           a.resolved_by as "resolvedBy",
+          a.notes,
           d.id as "deviceId",
           d.name as "deviceName",
           d.location,
@@ -138,7 +140,49 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
       queryParams
     );
 
+    // Get scout device statistics
+    const scoutStatsResult = await dbPool.query(
+      `SELECT
+        COUNT(*) as total_scouts,
+        SUM(CASE WHEN online = true AND last_seen > NOW() - INTERVAL '15 minutes' THEN 1 ELSE 0 END) as online_scouts
+      FROM devices
+      WHERE device_type = 'scout' AND unclaimed_at IS NULL ${tenantFilter}`,
+      queryParams
+    );
+
+    // Get recent motion events with classifications (for scouts)
+    const recentMotionQuery = showAllTenants
+      ? `SELECT
+          ic.id,
+          ic.classification,
+          ic.confidence,
+          ic.classified_at as "classifiedAt",
+          d.id as "deviceId",
+          d.name as "deviceName",
+          d.location
+        FROM image_classifications ic
+        JOIN devices d ON ic.device_id = d.id
+        WHERE d.device_type = 'scout'
+        ORDER BY ic.classified_at DESC
+        LIMIT 10`
+      : `SELECT
+          ic.id,
+          ic.classification,
+          ic.confidence,
+          ic.classified_at as "classifiedAt",
+          d.id as "deviceId",
+          d.name as "deviceName",
+          d.location
+        FROM image_classifications ic
+        JOIN devices d ON ic.device_id = d.id
+        WHERE d.device_type = 'scout' AND d.tenant_id = $1
+        ORDER BY ic.classified_at DESC
+        LIMIT 10`;
+
+    const recentMotionResult = await dbPool.query(recentMotionQuery, queryParams);
+
     const deviceStats = deviceStatsResult.rows[0];
+    const scoutStats = scoutStatsResult.rows[0];
     const alertStats = alertStatsResult.rows[0];
     const alertingDevices = alertingDevicesResult.rows[0];
 
@@ -180,6 +224,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
           isResolved: alert.status === 'resolved' || !!alert.resolvedAt,
           resolvedAt: alert.resolvedAt,
           resolvedBy: alert.resolvedBy,
+          resolvedNotes: alert.notes || null,
           deviceId: alert.deviceId,
           tenantId: alert.tenantId || tenantId,
           tenantName: alert.tenantName,
@@ -190,6 +235,21 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
         // Include flag for frontend to know if this is master tenant view
         isMasterTenantView: showAllTenants,
         firmwareDistribution: firmwareDistResult.rows,
+
+        // Scout-specific stats for iOS dashboard
+        scoutStats: {
+          total: parseInt(scoutStats.total_scouts) || 0,
+          online: parseInt(scoutStats.online_scouts) || 0,
+        },
+        recentMotionEvents: recentMotionResult.rows.map((event: any) => ({
+          id: event.id,
+          classification: event.classification,
+          confidence: parseFloat(event.confidence) || 0,
+          classifiedAt: event.classifiedAt,
+          deviceId: event.deviceId,
+          deviceName: event.deviceName,
+          location: event.location,
+        })),
       },
     });
   } catch (error: any) {

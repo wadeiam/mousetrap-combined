@@ -29,6 +29,7 @@ struct MouseTrapApp: App {
                 .onChange(of: authManager.isAuthenticated) { isAuthenticated in
                     if isAuthenticated {
                         // Connect WebSocket and register push on login
+                        // Note: tenantId may not be set yet, onChange(currentTenant) handles that
                         if let tenantId = authManager.currentTenant?.tenantId {
                             socketManager.connect(tenantId: tenantId)
                         }
@@ -44,9 +45,12 @@ struct MouseTrapApp: App {
                     }
                 }
                 .onChange(of: authManager.currentTenant?.tenantId) { newTenantId in
-                    // Switch WebSocket room when tenant changes
-                    if let tenantId = newTenantId {
+                    // Connect/switch WebSocket room when tenant changes
+                    guard authManager.isAuthenticated, let tenantId = newTenantId else { return }
+                    if socketManager.isConnected {
                         socketManager.switchTenant(tenantId)
+                    } else {
+                        socketManager.connect(tenantId: tenantId)
                     }
                 }
         }

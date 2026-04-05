@@ -61,7 +61,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         a.acknowledged_by,
         a.resolved_at,
         a.resolved_by,
-        a.resolved_notes,
+        a.notes as resolved_notes,
         a.created_at,
         a.updated_at,
         d.mqtt_client_id as mac_address,

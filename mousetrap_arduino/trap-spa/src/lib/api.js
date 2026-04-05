@@ -6,7 +6,7 @@
 function getBaseUrl() {
   const origin = window.location.origin;
   // Check if we're on a captive portal redirect (not a local IP)
-  if (origin.includes('192.168.') || origin.includes('localhost') || origin.includes('mousetrap.local')) {
+  if (origin.includes('192.168.') || origin.includes('10.') || origin.includes('172.') || origin.includes('localhost') || origin.includes('mousetrap.local')) {
     return origin;
   }
   // In captive portal mode, fall back to the device's AP IP

@@ -1,13 +1,15 @@
 /**
  * Push Notification Service
  *
- * Handles sending push notifications to mobile devices via Expo Push Notifications.
- * Supports iOS, Android, and web push tokens.
+ * Handles sending push notifications to mobile devices.
+ * Supports native APNs (iOS) and Expo Push Notifications.
  */
 
-import { Expo, ExpoPushMessage, ExpoPushTicket, ExpoPushReceipt } from 'expo-server-sdk';
+import { Expo, ExpoPushMessage, ExpoPushTicket } from 'expo-server-sdk';
+import apn from 'apn';
 import { Pool } from 'pg';
 import { logger } from './logger.service';
+import path from 'path';
 
 // Notification types
 export type NotificationType =
@@ -57,12 +59,102 @@ interface NotificationPreferences {
 
 export class PushService {
   private expo: Expo;
+  private apnProvider: apn.Provider | null = null;
   private db: Pool;
 
   constructor(db: Pool) {
     this.expo = new Expo();
     this.db = db;
+    this.initAPNs();
     logger.info('[PUSH] Push notification service initialized');
+  }
+
+  /**
+   * Initialize APNs provider
+   */
+  private initAPNs(): void {
+    const keyPath = process.env.APNS_KEY_PATH || path.join(__dirname, '../../keys/AuthKey_4LLQS44HAV.p8');
+    const keyId = process.env.APNS_KEY_ID || '4LLQS44HAV';
+    const teamId = process.env.APNS_TEAM_ID || 'SVW57P4S75';
+    const bundleId = process.env.APNS_BUNDLE_ID || 'com.mousetrap.ios';
+
+    try {
+      this.apnProvider = new apn.Provider({
+        token: {
+          key: keyPath,
+          keyId: keyId,
+          teamId: teamId,
+        },
+        production: process.env.NODE_ENV === 'production',
+      });
+      logger.info('[PUSH] APNs provider initialized', { keyId, teamId, bundleId, production: process.env.NODE_ENV === 'production' });
+    } catch (error: any) {
+      logger.error('[PUSH] Failed to initialize APNs', { error: error.message });
+    }
+  }
+
+  /**
+   * Check if token is an APNs device token (hex string, 64 chars)
+   */
+  private isAPNsToken(token: string): boolean {
+    // APNs device tokens are 64-character hex strings
+    return /^[a-fA-F0-9]{64}$/.test(token);
+  }
+
+  /**
+   * Send notification via APNs
+   */
+  private async sendViaAPNs(
+    tokens: string[],
+    notification: PushNotification
+  ): Promise<{ sent: number; failed: number; invalidTokens: string[] }> {
+    if (!this.apnProvider) {
+      logger.warn('[PUSH] APNs provider not initialized');
+      return { sent: 0, failed: tokens.length, invalidTokens: [] };
+    }
+
+    const bundleId = process.env.APNS_BUNDLE_ID || 'com.mousetrap.ios';
+    const invalidTokens: string[] = [];
+
+    const note = new apn.Notification();
+    note.alert = {
+      title: notification.title,
+      body: notification.body,
+    };
+    note.topic = bundleId;
+    note.sound = notification.sound || 'default';
+    if (notification.badge !== undefined) {
+      note.badge = notification.badge;
+    }
+    note.payload = notification.data || {};
+    (note as any).pushType = 'alert';
+    note.priority = notification.priority === 'high' ? 10 : 5;
+
+    try {
+      const result = await this.apnProvider.send(note, tokens);
+
+      // Track invalid tokens for removal
+      for (const failure of result.failed) {
+        if (failure.status === '410' || failure.response?.reason === 'Unregistered') {
+          invalidTokens.push(failure.device);
+        }
+        logger.warn('[PUSH] APNs delivery failed', {
+          device: failure.device.substring(0, 16) + '...',
+          status: failure.status,
+          reason: failure.response?.reason
+        });
+      }
+
+      logger.info('[PUSH] APNs send result', { sent: result.sent.length, failed: result.failed.length });
+      return {
+        sent: result.sent.length,
+        failed: result.failed.length,
+        invalidTokens
+      };
+    } catch (error: any) {
+      logger.error('[PUSH] APNs send error', { error: error.message });
+      return { sent: 0, failed: tokens.length, invalidTokens: [] };
+    }
   }
 
   /**
@@ -75,22 +167,48 @@ export class PushService {
     deviceName?: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Validate the token format
-      if (!Expo.isExpoPushToken(token)) {
-        logger.warn('[PUSH] Invalid Expo push token', { userId, token: String(token).substring(0, 20) + '...' });
-        return { success: false, error: 'Invalid push token format' };
+      logger.info('[PUSH] registerToken called', {
+        userId,
+        tokenPreview: String(token).substring(0, 20) + '...',
+        platform,
+        deviceName
+      });
+
+      // Accept both Expo tokens and native APNs tokens
+      const isNativeAPNs = this.isAPNsToken(token);
+      const isExpoToken = Expo.isExpoPushToken(token);
+
+      if (!isNativeAPNs && !isExpoToken) {
+        logger.warn('[PUSH] Invalid push token format', {
+          userId,
+          tokenPreview: String(token).substring(0, 20) + '...',
+          length: String(token).length
+        });
+        // Still register it - might be a valid format we don't recognize
       }
 
       // Upsert the token (update if exists, insert if not)
-      await this.db.query(
+      logger.info('[PUSH] Inserting token into database...');
+      const result = await this.db.query(
         `INSERT INTO push_tokens (user_id, token, platform, device_name, last_used_at)
          VALUES ($1, $2, $3, $4, NOW())
          ON CONFLICT (user_id, token)
-         DO UPDATE SET platform = $3, device_name = $4, last_used_at = NOW()`,
+         DO UPDATE SET platform = $3, device_name = $4, last_used_at = NOW()
+         RETURNING id`,
         [userId, token, platform, deviceName || null]
       );
 
-      logger.info('[PUSH] Token registered', { userId, platform, deviceName });
+      logger.info('[PUSH] Token insert result', {
+        rowCount: result.rowCount,
+        returnedId: result.rows[0]?.id
+      });
+
+      logger.info('[PUSH] Token registered', {
+        userId,
+        platform,
+        deviceName,
+        tokenType: isNativeAPNs ? 'apns' : isExpoToken ? 'expo' : 'unknown'
+      });
       return { success: true };
     } catch (error: any) {
       logger.error('[PUSH] Failed to register token', { error: error.message, userId });
@@ -229,60 +347,93 @@ export class PushService {
         return { sent: 0, failed: 0 };
       }
 
-      // Build messages for each token
-      const messages: ExpoPushMessage[] = result.rows.map(token => ({
-        to: token.token,
-        title: notification.title,
-        body: notification.body,
-        data: notification.data,
-        sound: notification.sound || 'default',
-        priority: notification.priority || 'high',
-        categoryId: notification.categoryId,
-      }));
+      // Separate tokens by type
+      const apnsTokens: string[] = [];
+      const expoTokens: PushToken[] = [];
 
-      // Send in chunks (Expo recommends max 100 per request)
-      const chunks = this.expo.chunkPushNotifications(messages);
-      let sent = 0;
-      let failed = 0;
-
-      for (const chunk of chunks) {
-        try {
-          const tickets = await this.expo.sendPushNotificationsAsync(chunk);
-
-          // Process tickets
-          for (let i = 0; i < tickets.length; i++) {
-            const ticket = tickets[i];
-            const token = result.rows[i];
-
-            if (ticket.status === 'ok') {
-              sent++;
-              // Log the notification
-              await this.logNotification(userId, token.id, notificationType, notification, 'sent');
-              // Update last_used_at
-              await this.db.query(
-                'UPDATE push_tokens SET last_used_at = NOW() WHERE id = $1',
-                [token.id]
-              );
-            } else {
-              failed++;
-              const errorMessage = 'message' in ticket ? ticket.message : 'Unknown error';
-              await this.logNotification(userId, token.id, notificationType, notification, 'failed', errorMessage);
-
-              // Remove invalid tokens
-              if ('details' in ticket && ticket.details?.error === 'DeviceNotRegistered') {
-                logger.info('[PUSH] Removing invalid token', { tokenId: token.id });
-                await this.removeToken(token.token);
-              }
-            }
+      for (const tokenRow of result.rows) {
+        if (this.isAPNsToken(tokenRow.token)) {
+          apnsTokens.push(tokenRow.token);
+        } else if (Expo.isExpoPushToken(tokenRow.token)) {
+          expoTokens.push(tokenRow);
+        } else {
+          // Try as APNs if iOS platform
+          if (tokenRow.platform === 'ios') {
+            apnsTokens.push(tokenRow.token);
           }
-        } catch (error: any) {
-          logger.error('[PUSH] Failed to send chunk', { error: error.message });
-          failed += chunk.length;
         }
       }
 
-      logger.info('[PUSH] Notifications sent', { userId, sent, failed });
-      return { sent, failed };
+      let totalSent = 0;
+      let totalFailed = 0;
+
+      // Send via APNs
+      if (apnsTokens.length > 0) {
+        const apnsResult = await this.sendViaAPNs(apnsTokens, notification);
+        totalSent += apnsResult.sent;
+        totalFailed += apnsResult.failed;
+
+        // Remove invalid tokens
+        for (const invalidToken of apnsResult.invalidTokens) {
+          await this.removeToken(invalidToken);
+        }
+      }
+
+      // Send via Expo
+      if (expoTokens.length > 0) {
+        const messages: ExpoPushMessage[] = expoTokens.map(token => ({
+          to: token.token,
+          title: notification.title,
+          body: notification.body,
+          data: notification.data,
+          sound: notification.sound || 'default',
+          priority: notification.priority || 'high',
+          categoryId: notification.categoryId,
+        }));
+
+        const chunks = this.expo.chunkPushNotifications(messages);
+
+        for (const chunk of chunks) {
+          try {
+            const tickets = await this.expo.sendPushNotificationsAsync(chunk);
+
+            for (let i = 0; i < tickets.length; i++) {
+              const ticket = tickets[i];
+              const token = expoTokens[i];
+
+              if (ticket.status === 'ok') {
+                totalSent++;
+                await this.db.query(
+                  'UPDATE push_tokens SET last_used_at = NOW() WHERE id = $1',
+                  [token.id]
+                );
+              } else {
+                totalFailed++;
+                if ('details' in ticket && ticket.details?.error === 'DeviceNotRegistered') {
+                  await this.removeToken(token.token);
+                }
+              }
+            }
+          } catch (error: any) {
+            logger.error('[PUSH] Failed to send Expo chunk', { error: error.message });
+            totalFailed += chunk.length;
+          }
+        }
+      }
+
+      // Log notification
+      for (const tokenRow of result.rows) {
+        await this.logNotification(
+          userId,
+          tokenRow.id,
+          notificationType,
+          notification,
+          totalSent > 0 ? 'sent' : 'failed'
+        );
+      }
+
+      logger.info('[PUSH] Notifications sent', { userId, sent: totalSent, failed: totalFailed });
+      return { sent: totalSent, failed: totalFailed };
     } catch (error: any) {
       logger.error('[PUSH] Error sending to user', { error: error.message, userId });
       return { sent: 0, failed: 0 };
@@ -339,6 +490,8 @@ export class PushService {
     else if (alertType === 'low_battery') notificationType = 'low_battery';
 
     // Build notification content
+    // Trap alerts and high/critical always get sound
+    const playSound = alertType === 'trap_triggered' || severity === 'critical' || severity === 'high';
     const notification: PushNotification = {
       title: this.getAlertTitle(alertType, deviceName, severity),
       body: message || this.getAlertBody(alertType, deviceName),
@@ -349,8 +502,8 @@ export class PushService {
         alertType,
         severity,
       },
-      sound: severity === 'critical' || severity === 'high' ? 'default' : null,
-      priority: severity === 'critical' ? 'high' : 'default',
+      sound: playSound ? 'default' : null,
+      priority: alertType === 'trap_triggered' || severity === 'critical' ? 'high' : 'default',
     };
 
     // Send to all users in tenant
@@ -439,6 +592,15 @@ export class PushService {
       'test',
       true // Skip preference check for test
     );
+  }
+
+  /**
+   * Cleanup - call when shutting down
+   */
+  shutdown(): void {
+    if (this.apnProvider) {
+      this.apnProvider.shutdown();
+    }
   }
 }
 

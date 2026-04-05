@@ -589,4 +589,412 @@ router.get(
   }
 );
 
+/**
+ * GET /api/classification/live
+ * Get live feed of recent classifications with full details
+ * For debugging and monitoring ML performance
+ */
+router.get('/live', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const isSuperAdmin = req.user!.role === 'superadmin';
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+    const minutes = parseInt(req.query.minutes as string) || 60;
+
+    const tenantFilter = isSuperAdmin ? '' : 'AND ic.tenant_id = $2';
+    const params: any[] = [limit];
+    if (!isSuperAdmin) params.push(tenantId);
+
+    const query = `
+      SELECT
+        ic.id,
+        ic.device_id,
+        d.name as device_name,
+        d.mac_address,
+        ic.classification,
+        ic.confidence,
+        ic.top_match,
+        ic.all_predictions,
+        ic.classified_at,
+        ic.user_corrected_class,
+        ic.image_source
+      FROM image_classifications ic
+      JOIN devices d ON ic.device_id = d.id
+      WHERE ic.classified_at > NOW() - INTERVAL '${minutes} minutes'
+        ${tenantFilter}
+      ORDER BY ic.classified_at DESC
+      LIMIT $1
+    `;
+
+    const { rows } = await dbPool.query(query, params);
+
+    // Calculate summary stats
+    const stats = {
+      total: rows.length,
+      byClass: {} as Record<string, number>,
+      avgConfidence: 0,
+      rodentCount: 0,
+    };
+
+    let totalConfidence = 0;
+    rows.forEach((row: any) => {
+      stats.byClass[row.classification] = (stats.byClass[row.classification] || 0) + 1;
+      totalConfidence += row.confidence;
+      if (['rodent', 'mouse', 'rat'].includes(row.classification)) {
+        stats.rodentCount++;
+      }
+    });
+    stats.avgConfidence = rows.length > 0 ? totalConfidence / rows.length : 0;
+
+    res.json({
+      success: true,
+      timeRange: `Last ${minutes} minutes`,
+      stats,
+      classifications: rows.map((r: any) => ({
+        id: r.id,
+        deviceId: r.device_id,
+        deviceName: r.device_name,
+        macAddress: r.mac_address,
+        classification: r.classification,
+        confidence: r.confidence,
+        confidencePercent: (r.confidence * 100).toFixed(1) + '%',
+        topMatch: r.top_match,
+        allPredictions: r.all_predictions,
+        classifiedAt: r.classified_at,
+        corrected: r.user_corrected_class,
+        source: r.image_source,
+      })),
+    });
+  } catch (error: any) {
+    logger.error('Failed to get live classifications', { error: error.message });
+    res.status(500).json({ error: 'Failed to get live classifications' });
+  }
+});
+
+/**
+ * GET /api/classification/debug
+ * Simple HTML debug page for viewing classification activity
+ */
+router.get('/debug', async (req: AuthRequest, res: Response) => {
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ML Classification Monitor</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+    h1 { color: #00d4ff; margin-bottom: 20px; }
+    .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+    .stat-card { background: #16213e; padding: 15px 25px; border-radius: 10px; min-width: 150px; }
+    .stat-card h3 { color: #888; font-size: 12px; text-transform: uppercase; }
+    .stat-card .value { font-size: 28px; font-weight: bold; color: #00d4ff; }
+    .stat-card.rodent .value { color: #ff6b6b; }
+    .controls { margin-bottom: 20px; display: flex; gap: 10px; align-items: center; }
+    button { background: #00d4ff; color: #000; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+    button:hover { background: #00a8cc; }
+    button.danger { background: #ff6b6b; }
+    button.danger:hover { background: #ee5a5a; }
+    select, input { background: #16213e; color: #eee; border: 1px solid #333; padding: 10px; border-radius: 5px; }
+    table { width: 100%; border-collapse: collapse; background: #16213e; border-radius: 10px; overflow: hidden; }
+    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
+    th { background: #0f3460; color: #00d4ff; font-weight: 600; }
+    tr:hover { background: #1f4068; }
+    .class-rodent { color: #ff6b6b; font-weight: bold; }
+    .class-other { color: #888; }
+    .class-pet { color: #ffd93d; }
+    .class-person { color: #6bcb77; }
+    .confidence-high { color: #6bcb77; }
+    .confidence-med { color: #ffd93d; }
+    .confidence-low { color: #ff6b6b; }
+    .refresh-indicator { color: #666; font-size: 12px; }
+    .time-ago { color: #888; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>🔬 ML Classification Monitor</h1>
+
+  <div class="stats" id="stats">
+    <div class="stat-card"><h3>Total Events</h3><div class="value" id="stat-total">-</div></div>
+    <div class="stat-card rodent"><h3>Rodents</h3><div class="value" id="stat-rodent">-</div></div>
+    <div class="stat-card"><h3>Avg Confidence</h3><div class="value" id="stat-confidence">-</div></div>
+    <div class="stat-card"><h3>Time Range</h3><div class="value" id="stat-range">-</div></div>
+  </div>
+
+  <div class="controls">
+    <label>Time Range: </label>
+    <select id="minutes" onchange="refresh()">
+      <option value="5">Last 5 min</option>
+      <option value="15">Last 15 min</option>
+      <option value="30">Last 30 min</option>
+      <option value="60" selected>Last 1 hour</option>
+      <option value="180">Last 3 hours</option>
+      <option value="720">Last 12 hours</option>
+      <option value="1440">Last 24 hours</option>
+    </select>
+    <button onclick="refresh()">🔄 Refresh</button>
+    <button class="danger" onclick="deleteFalsePositives()">🗑️ Delete Non-Rodents</button>
+    <span class="refresh-indicator" id="lastRefresh">Auto-refresh: 10s</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Device</th>
+        <th>Classification</th>
+        <th>Confidence</th>
+        <th>Top Match</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody">
+      <tr><td colspan="6" style="text-align:center; padding:40px;">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    let autoRefreshInterval;
+
+    function getClassColor(cls) {
+      if (['rodent', 'mouse', 'rat'].includes(cls)) return 'class-rodent';
+      if (['pet', 'cat', 'dog'].includes(cls)) return 'class-pet';
+      if (['person', 'human'].includes(cls)) return 'class-person';
+      return 'class-other';
+    }
+
+    function getConfidenceColor(conf) {
+      if (conf >= 0.7) return 'confidence-high';
+      if (conf >= 0.4) return 'confidence-med';
+      return 'confidence-low';
+    }
+
+    function timeAgo(dateStr) {
+      const now = new Date();
+      const date = new Date(dateStr);
+      const seconds = Math.floor((now - date) / 1000);
+      if (seconds < 60) return seconds + 's ago';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + 'm ago';
+      const hours = Math.floor(minutes / 60);
+      return hours + 'h ' + (minutes % 60) + 'm ago';
+    }
+
+    async function refresh() {
+      const minutes = document.getElementById('minutes').value;
+      try {
+        const res = await fetch('/api/classification/live?minutes=' + minutes + '&limit=100');
+        const data = await res.json();
+
+        if (data.success) {
+          document.getElementById('stat-total').textContent = data.stats.total;
+          document.getElementById('stat-rodent').textContent = data.stats.rodentCount;
+          document.getElementById('stat-confidence').textContent = (data.stats.avgConfidence * 100).toFixed(0) + '%';
+          document.getElementById('stat-range').textContent = data.timeRange;
+
+          const tbody = document.getElementById('tableBody');
+          if (data.classifications.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:40px; color:#666;">No classifications in this time range</td></tr>';
+          } else {
+            tbody.innerHTML = data.classifications.map(c => \`
+              <tr>
+                <td><span class="time-ago">\${timeAgo(c.classifiedAt)}</span><br><small>\${new Date(c.classifiedAt).toLocaleTimeString()}</small></td>
+                <td>\${c.deviceName}<br><small style="color:#666">\${c.macAddress}</small></td>
+                <td class="\${getClassColor(c.classification)}">\${c.classification.toUpperCase()}</td>
+                <td class="\${getConfidenceColor(c.confidence)}">\${c.confidencePercent}</td>
+                <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis">\${c.topMatch || '-'}</td>
+                <td><button onclick="deleteOne('\${c.id}')" style="padding:5px 10px; font-size:12px;">Delete</button></td>
+              </tr>
+            \`).join('');
+          }
+
+          document.getElementById('lastRefresh').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        }
+      } catch (err) {
+        console.error('Refresh failed:', err);
+      }
+    }
+
+    async function deleteOne(id) {
+      if (!confirm('Delete this classification?')) return;
+      try {
+        await fetch('/api/classification/' + id, { method: 'DELETE' });
+        refresh();
+      } catch (err) {
+        alert('Delete failed');
+      }
+    }
+
+    async function deleteFalsePositives() {
+      if (!confirm('Delete ALL non-rodent classifications? This cannot be undone.')) return;
+      try {
+        const res = await fetch('/api/classification/bulk/false-positives', { method: 'DELETE' });
+        const data = await res.json();
+        alert('Deleted ' + data.deleted + ' classification(s)');
+        refresh();
+      } catch (err) {
+        alert('Delete failed');
+      }
+    }
+
+    // Initial load and auto-refresh
+    refresh();
+    autoRefreshInterval = setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
+  `;
+
+  res.setHeader('Content-Type', 'text/html');
+  res.send(html);
+});
+
+/**
+ * DELETE /api/classification/bulk/false-positives
+ * Delete all non-rodent classifications (false positives cleanup)
+ *
+ * Query params:
+ *   - before: ISO date string - delete records before this date
+ *   - deviceId: optional - only delete for specific device
+ */
+router.delete('/bulk/false-positives', async (req: AuthRequest, res: Response) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const before = req.query.before as string | undefined;
+    const deviceId = req.query.deviceId as string | undefined;
+
+    let query = `
+      DELETE FROM image_classifications
+      WHERE tenant_id = $1
+        AND classification != 'rodent'
+    `;
+    const params: any[] = [tenantId];
+    let paramIdx = 2;
+
+    if (before) {
+      query += ` AND classified_at < $${paramIdx}`;
+      params.push(before);
+      paramIdx++;
+    }
+
+    if (deviceId) {
+      query += ` AND device_id = $${paramIdx}`;
+      params.push(deviceId);
+      paramIdx++;
+    }
+
+    query += ' RETURNING id';
+
+    const result = await dbPool.query(query, params);
+
+    logger.info('Bulk deleted false positive classifications', {
+      tenantId,
+      count: result.rowCount,
+      before,
+      deviceId,
+    });
+
+    res.json({
+      success: true,
+      deleted: result.rowCount,
+      message: `Deleted ${result.rowCount} non-rodent classification(s)`,
+    });
+  } catch (error: any) {
+    logger.error('Failed to bulk delete classifications', { error: error.message });
+    res.status(500).json({ error: 'Failed to delete classifications' });
+  }
+});
+
+/**
+ * DELETE /api/classification/bulk/all
+ * Delete all classifications for tenant (admin only - for cleanup)
+ *
+ * Query params:
+ *   - before: ISO date string - only delete records before this date
+ *   - deviceId: optional - only delete for specific device
+ */
+router.delete(
+  '/bulk/all',
+  requireRole('admin', 'superadmin'),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const tenantId = req.user!.tenantId;
+      const before = req.query.before as string | undefined;
+      const deviceId = req.query.deviceId as string | undefined;
+
+      if (!before && !deviceId) {
+        return res.status(400).json({
+          error: 'Safety check: must specify either "before" date or "deviceId" parameter',
+        });
+      }
+
+      let query = `DELETE FROM image_classifications WHERE tenant_id = $1`;
+      const params: any[] = [tenantId];
+      let paramIdx = 2;
+
+      if (before) {
+        query += ` AND classified_at < $${paramIdx}`;
+        params.push(before);
+        paramIdx++;
+      }
+
+      if (deviceId) {
+        query += ` AND device_id = $${paramIdx}`;
+        params.push(deviceId);
+        paramIdx++;
+      }
+
+      query += ' RETURNING id';
+
+      const result = await dbPool.query(query, params);
+
+      logger.info('Bulk deleted all classifications', {
+        tenantId,
+        count: result.rowCount,
+        before,
+        deviceId,
+      });
+
+      res.json({
+        success: true,
+        deleted: result.rowCount,
+        message: `Deleted ${result.rowCount} classification(s)`,
+      });
+    } catch (error: any) {
+      logger.error('Failed to bulk delete all classifications', { error: error.message });
+      res.status(500).json({ error: 'Failed to delete classifications' });
+    }
+  }
+);
+
+/**
+ * DELETE /api/classification/:id
+ * Delete a single classification record
+ * NOTE: This must come AFTER /bulk/* routes to avoid matching "bulk" as an ID
+ */
+router.delete('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+
+    // Delete only if belongs to user's tenant
+    const result = await dbPool.query(
+      `DELETE FROM image_classifications WHERE id = $1 AND tenant_id = $2 RETURNING id`,
+      [id, tenantId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Classification not found' });
+    }
+
+    logger.info('Classification deleted', { classificationId: id, tenantId });
+    res.json({ success: true, deleted: id });
+  } catch (error: any) {
+    logger.error('Failed to delete classification', { error: error.message });
+    res.status(500).json({ error: 'Failed to delete classification' });
+  }
+});
+
 export default router;

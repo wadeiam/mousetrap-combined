@@ -424,6 +424,32 @@ class ApiService {
       };
     }
   }
+
+  // Connectivity history
+  async getDeviceConnectivity(deviceId: string): Promise<ApiResponse<{ id: number; event: string; createdAt: string }[]>> {
+    try {
+      const response = await this.client.get(`/devices/${deviceId}/connectivity`);
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.response?.data?.error || 'Failed to fetch connectivity history'
+      };
+    }
+  }
+
+  // Device logs (proxied from ESP32)
+  async getDeviceLogs(deviceId: string, logType: 'system' | 'previous' | 'older' | 'access'): Promise<ApiResponse<any>> {
+    try {
+      const response = await this.client.get(`/devices/${deviceId}/logs/${logType}`);
+      return { success: true, data: response.data };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: error.response?.data?.error || 'Failed to fetch device logs'
+      };
+    }
+  }
 }
 
 export const api = new ApiService();

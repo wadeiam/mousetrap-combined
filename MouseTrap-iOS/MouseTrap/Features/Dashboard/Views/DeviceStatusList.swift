@@ -92,7 +92,11 @@ struct DeviceStatusList: View {
                 paused: false,
                 heapFree: nil,
                 lastSnapshot: nil,
-                lastSnapshotAt: nil
+                lastSnapshotAt: nil,
+                deviceType: .trap,
+                activeAlert: nil,
+                muteOfflinePermanently: nil,
+                muteOfflineUntil: nil
             ),
             Device(
                 id: "2",
@@ -115,7 +119,11 @@ struct DeviceStatusList: View {
                 paused: false,
                 heapFree: nil,
                 lastSnapshot: nil,
-                lastSnapshotAt: nil
+                lastSnapshotAt: nil,
+                deviceType: .trap,
+                activeAlert: nil,
+                muteOfflinePermanently: nil,
+                muteOfflineUntil: nil
             )
         ])
     }

@@ -6,12 +6,20 @@
 		"unsubscribe":	true
 	},
 	"clients":	[{
+			"username":	"1CDBD49930CC",
+			"roles":	[{
+					"rolename":	"device"
+				}],
+			"password":	"+8rPkkUHR3rvXiRpxkjfyDzmjUS/TdJeUhSNfrftSsGAeIFIY85gcrNlgY8KlqrK6rmSLQgblKRr/TCiVtflWQ==",
+			"salt":	"sWV8aejMOS/4uHgB",
+			"iterations":	101
+		}, {
 			"username":	"94A990306028",
 			"roles":	[{
 					"rolename":	"device"
 				}],
-			"password":	"Z7f/JZaVCfeHT2/pf47JKw8i07Eab/jBucCCstVeUOJSaApbk6397bDO1TCdXRPyjdwi0y6xM/FIiFVc4kg+Hw==",
-			"salt":	"7MDc6+4ZnFbspE87",
+			"password":	"b5Y85s6riRoe0rJM5MbW6bJhtHAMkpxVUAMVEyiVWux1QewVhWwt5SLEVhyVLIbzhfPBbUafUWuikMdpjVd9Kg==",
+			"salt":	"va4RAJ9NI/Rwieo1",
 			"iterations":	101
 		}, {
 			"username":	"D0CF13155060",

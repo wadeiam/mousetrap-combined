@@ -112,7 +112,10 @@ router.get('/', async (req: AuthRequest, res: Response) => {
         d.local_ip as "ipAddress",
         d.mac_address as "macAddress",
         d.created_at as "createdAt",
-        d.updated_at as "updatedAt"
+        d.updated_at as "updatedAt",
+        d.device_type as "deviceType",
+        d.mute_offline_permanently as "muteOfflinePermanently",
+        d.mute_offline_until as "muteOfflineUntil"
       FROM devices d
       LEFT JOIN tenants t ON d.tenant_id = t.id
       WHERE d.unclaimed_at IS NULL
@@ -298,8 +301,11 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
           d.created_at as "createdAt",
           d.updated_at as "updatedAt",
           d.last_snapshot as "lastSnapshot",
-          FLOOR(EXTRACT(EPOCH FROM d.last_snapshot_at) * 1000)::bigint as "lastSnapshotTimestamp",
-          d.timezone
+          d.last_snapshot_at as "lastSnapshotAt",
+          d.timezone,
+          d.device_type as "deviceType",
+          d.mute_offline_permanently as "muteOfflinePermanently",
+          d.mute_offline_until as "muteOfflineUntil"
         FROM devices d
         LEFT JOIN tenants t ON d.tenant_id = t.id
         WHERE d.id = $1 AND d.unclaimed_at IS NULL`,
@@ -343,8 +349,11 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
           d.created_at as "createdAt",
           d.updated_at as "updatedAt",
           d.last_snapshot as "lastSnapshot",
-          FLOOR(EXTRACT(EPOCH FROM d.last_snapshot_at) * 1000)::bigint as "lastSnapshotTimestamp",
-          d.timezone
+          d.last_snapshot_at as "lastSnapshotAt",
+          d.timezone,
+          d.device_type as "deviceType",
+          d.mute_offline_permanently as "muteOfflinePermanently",
+          d.mute_offline_until as "muteOfflineUntil"
         FROM devices d
         LEFT JOIN tenants t ON d.tenant_id = t.id
         WHERE d.id = $1 AND d.tenant_id = $2 AND d.unclaimed_at IS NULL`,
@@ -359,9 +368,49 @@ router.get('/:id', validateUuid(), async (req: AuthRequest, res: Response) => {
       });
     }
 
+    const device = result.rows[0];
+
+    // Check for active (unresolved) alert with snapshot
+    const alertResult = await dbPool.query(
+      `SELECT id, sensor_data, triggered_at
+       FROM alerts
+       WHERE device_id = $1 AND status IN ('new', 'acknowledged')
+       ORDER BY triggered_at DESC
+       LIMIT 1`,
+      [id]
+    );
+
+    let activeAlert = null;
+    if (alertResult.rows.length > 0) {
+      const alert = alertResult.rows[0];
+      const sensorData = alert.sensor_data || {};
+      // Convert snapshot_at to ISO string if it exists
+      let snapshotAt = sensorData.snapshot_at;
+      if (snapshotAt) {
+        // Handle various formats: Date object, ISO string, or timestamp
+        if (typeof snapshotAt === 'number') {
+          snapshotAt = new Date(snapshotAt).toISOString();
+        } else if (snapshotAt instanceof Date) {
+          snapshotAt = snapshotAt.toISOString();
+        } else if (typeof snapshotAt === 'string' && !snapshotAt.includes('T')) {
+          // PostgreSQL timestamp format without T separator
+          snapshotAt = new Date(snapshotAt).toISOString();
+        }
+      }
+      activeAlert = {
+        id: alert.id,
+        triggeredAt: alert.triggered_at,
+        snapshot: sensorData.snapshot || null,
+        snapshotAt: snapshotAt || null,
+      };
+    }
+
     res.json({
       success: true,
-      data: result.rows[0],
+      data: {
+        ...device,
+        activeAlert,
+      },
     });
   } catch (error: any) {
     console.error('Get device error:', error);
@@ -827,8 +876,8 @@ router.post('/:id/test-alert', requireRole('admin', 'superadmin'), async (req: A
     const tenantId = req.user!.tenantId;
     const isSuperadmin = req.user!.role === 'superadmin';
 
-    // Get device info - superadmins can access any device
-    let deviceQuery = 'SELECT id, name, mac_address, mqtt_client_id, tenant_id FROM devices WHERE id = $1';
+    // Get device info including snapshot - superadmins can access any device
+    let deviceQuery = 'SELECT id, name, mac_address, mqtt_client_id, tenant_id, last_snapshot, last_snapshot_at FROM devices WHERE id = $1';
     const queryParams: any[] = [id];
 
     if (!isSuperadmin) {
@@ -847,28 +896,48 @@ router.post('/:id/test-alert', requireRole('admin', 'superadmin'), async (req: A
 
     const device = deviceResult.rows[0];
     const deviceTenantId = device.tenant_id;
+    const deviceName = device.name || device.mac_address;
+    const alertSnapshot = device.last_snapshot;
+    const alertSnapshotAt = device.last_snapshot_at;
 
-    // Create a test alert in the database
-    const alertResult = await dbPool.query(
-      `INSERT INTO alerts (device_id, tenant_id, severity, status, sensor_data, triggered_at)
-       VALUES ($1, $2, 'high', 'new', $3, NOW())
-       RETURNING id, triggered_at`,
-      [
-        id,
-        deviceTenantId,
-        JSON.stringify({
-          alert_type: 'trap_triggered',
-          message: 'Test alert triggered from mobile app',
-          severity: 'high',
-          is_test: true,
-        }),
-      ]
+    // Check if there's already an active (new or acknowledged) alert for this device
+    const existingAlertResult = await dbPool.query(
+      `SELECT id, triggered_at FROM alerts
+       WHERE device_id = $1 AND status IN ('new', 'acknowledged')
+       ORDER BY triggered_at DESC LIMIT 1`,
+      [id]
     );
 
-    const alertId = alertResult.rows[0].id;
+    let alertId: string;
+    let isExisting = false;
 
-    const deviceName = device.name || device.mac_address;
-    console.log(`[Test Alert] Created test alert ${alertId} for device ${deviceName}`);
+    if (existingAlertResult.rows.length > 0) {
+      // Use existing alert instead of creating duplicate
+      alertId = existingAlertResult.rows[0].id;
+      isExisting = true;
+      console.log(`[Test Alert] Device ${deviceName} already has active alert ${alertId}, reusing`);
+    } else {
+      // Create a new test alert in the database with snapshot
+      const alertResult = await dbPool.query(
+        `INSERT INTO alerts (device_id, tenant_id, severity, status, sensor_data, triggered_at)
+         VALUES ($1, $2, 'high', 'new', $3, NOW())
+         RETURNING id, triggered_at`,
+        [
+          id,
+          deviceTenantId,
+          JSON.stringify({
+            alert_type: 'trap_triggered',
+            message: 'Test alert triggered from mobile app',
+            severity: 'high',
+            is_test: true,
+            snapshot: alertSnapshot || null,
+            snapshot_at: alertSnapshotAt || null,
+          }),
+        ]
+      );
+      alertId = alertResult.rows[0].id;
+      console.log(`[Test Alert] Created new test alert ${alertId} for device ${deviceName}`);
+    }
 
     // Emit WebSocket event for immediate UI update
     const mqttService = req.app.locals.mqttService;
@@ -1455,6 +1524,194 @@ router.post('/:id/rotate-credentials', requireRole('superadmin'), async (req: Au
       success: false,
       error: 'Internal server error',
     });
+  }
+});
+
+/**
+ * Mute/unmute offline alerts for a device
+ * POST /devices/:id/mute-offline
+ * Body: { muted: boolean, duration?: number (hours, optional - null for permanent) }
+ */
+router.post('/:id/mute-offline', async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const { muted, duration } = req.body;
+  const dbPool = req.app.locals.dbPool as Pool;
+
+  try {
+    // Verify device exists and user has access
+    const deviceResult = await dbPool.query(
+      `SELECT d.id, d.name, d.tenant_id
+       FROM devices d
+       WHERE d.id = $1`,
+      [id]
+    );
+
+    if (deviceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const device = deviceResult.rows[0];
+
+    // Check if user is superadmin
+    const superadminCheck = await dbPool.query(
+      `SELECT user_is_superadmin($1) as is_superadmin`,
+      [req.user?.userId]
+    );
+    const isSuperadmin = superadminCheck.rows[0]?.is_superadmin;
+
+    // Check tenant access
+    if (device.tenant_id !== req.user?.tenantId && !isSuperadmin) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (muted) {
+      if (duration) {
+        // Temporary mute for specified hours
+        const muteUntil = new Date(Date.now() + duration * 60 * 60 * 1000);
+        await dbPool.query(
+          `UPDATE devices SET mute_offline_until = $1, mute_offline_permanently = false, updated_at = NOW() WHERE id = $2`,
+          [muteUntil, id]
+        );
+        console.log(`[MUTE-OFFLINE] Device ${device.name} muted until ${muteUntil.toISOString()}`);
+        res.json({
+          success: true,
+          message: `Offline alerts muted for ${duration} hours`,
+          muteUntil: muteUntil.toISOString(),
+        });
+      } else {
+        // Permanent mute
+        await dbPool.query(
+          `UPDATE devices SET mute_offline_permanently = true, mute_offline_until = NULL, updated_at = NOW() WHERE id = $1`,
+          [id]
+        );
+        console.log(`[MUTE-OFFLINE] Device ${device.name} muted permanently`);
+        res.json({
+          success: true,
+          message: 'Offline alerts muted permanently',
+          mutePermanently: true,
+        });
+      }
+    } else {
+      // Unmute
+      await dbPool.query(
+        `UPDATE devices SET mute_offline_permanently = false, mute_offline_until = NULL, updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      console.log(`[MUTE-OFFLINE] Device ${device.name} unmuted`);
+      res.json({
+        success: true,
+        message: 'Offline alerts unmuted',
+      });
+    }
+  } catch (error: any) {
+    console.error('[MUTE-OFFLINE] Error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================================
+// GET /devices/:id/connectivity — Connectivity history (last 100 events)
+// ============================================================================
+router.get('/:id/connectivity', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id } = req.params;
+    const tenantId = req.user!.tenantId;
+    const isSuperAdmin = req.user!.role === 'superadmin';
+
+    // Verify device belongs to tenant (or superadmin)
+    const deviceCheck = isSuperAdmin
+      ? await dbPool.query('SELECT id FROM devices WHERE id = $1', [id])
+      : await dbPool.query('SELECT id FROM devices WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+
+    if (deviceCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const result = await dbPool.query(
+      `SELECT id, event, created_at FROM device_connectivity_log
+       WHERE device_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [id]
+    );
+
+    res.json(result.rows.map(row => ({
+      id: row.id,
+      event: row.event,
+      createdAt: row.created_at,
+    })));
+  } catch (error: any) {
+    console.error('[CONNECTIVITY] Error fetching connectivity log:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============================================================================
+// GET /devices/:id/logs/:logType — Proxy device logs from ESP32
+// ============================================================================
+const VALID_LOG_TYPES: Record<string, string> = {
+  system: 'system-logs',
+  previous: 'previous-logs',
+  older: 'older-logs',
+  access: 'access-logs',
+};
+
+router.get('/:id/logs/:logType', async (req: AuthRequest, res: Response) => {
+  try {
+    const { id, logType } = req.params;
+    const tenantId = req.user!.tenantId;
+    const isSuperAdmin = req.user!.role === 'superadmin';
+
+    const endpoint = VALID_LOG_TYPES[logType];
+    if (!endpoint) {
+      return res.status(400).json({ error: `Invalid log type. Must be one of: ${Object.keys(VALID_LOG_TYPES).join(', ')}` });
+    }
+
+    // Get device with local_ip, verify tenant access
+    const deviceQuery = isSuperAdmin
+      ? await dbPool.query('SELECT id, local_ip, online FROM devices WHERE id = $1', [id])
+      : await dbPool.query('SELECT id, local_ip, online FROM devices WHERE id = $1 AND tenant_id = $2', [id, tenantId]);
+
+    if (deviceQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'Device not found' });
+    }
+
+    const device = deviceQuery.rows[0];
+
+    if (!device.online) {
+      return res.status(503).json({ error: 'Device is offline' });
+    }
+
+    if (!device.local_ip) {
+      return res.status(503).json({ error: 'Device IP address not available' });
+    }
+
+    // Proxy request to device
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const response = await fetch(`http://${device.local_ip}/api/${endpoint}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        return res.status(502).json({ error: `Device returned status ${response.status}` });
+      }
+
+      const data = await response.json();
+      res.json(data);
+    } catch (fetchError: any) {
+      clearTimeout(timeout);
+      if (fetchError.name === 'AbortError') {
+        return res.status(504).json({ error: 'Device request timed out' });
+      }
+      return res.status(502).json({ error: 'Unable to reach device' });
+    }
+  } catch (error: any) {
+    console.error('[DEVICE-LOGS] Error proxying logs:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 

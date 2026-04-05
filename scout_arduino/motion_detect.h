@@ -24,11 +24,13 @@ struct MotionConfig {
 struct MotionResult {
   bool detected;          // Motion was detected
   bool sizeFiltered;      // Was filtered due to size (too big/small)
+  bool aspectFiltered;    // Was filtered due to aspect ratio (not rodent-shaped)
   uint16_t x;             // Bounding box X
   uint16_t y;             // Bounding box Y
   uint16_t width;         // Bounding box width
   uint16_t height;        // Bounding box height
   float sizePercent;      // Size as percentage of frame
+  float aspectRatio;      // Width/height ratio
   uint32_t changedBlocks; // Number of blocks that changed
   uint32_t totalBlocks;   // Total blocks analyzed
   float confidence;       // Detection confidence (0-1)
@@ -38,12 +40,12 @@ struct MotionResult {
 class MotionDetector {
 public:
   MotionDetector() : prevFrame(nullptr), prevWidth(0), prevHeight(0), lastDetectionTime(0) {
-    // Default configuration
-    config.threshold = 25;
-    config.minSizePercent = 1.0;
+    // Default configuration - tuned for reduced false positives
+    config.threshold = 60;         // Higher threshold = less sensitive to noise
+    config.minSizePercent = 4.0;   // Filter tiny artifacts
     config.maxSizePercent = 30.0;
     config.blockSize = 16;
-    config.cooldownMs = 2000;
+    config.cooldownMs = 5000;      // 5 sec cooldown allows re-detection but prevents spam
   }
 
   ~MotionDetector() {
@@ -69,23 +71,21 @@ public:
    * @return MotionResult with detection info
    */
   MotionResult detect(camera_fb_t* frame) {
-    MotionResult result = {false, false, 0, 0, 0, 0, 0.0, 0, 0, 0.0};
+    MotionResult result = {false, false, false, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0.0};
 
     if (!frame || !frame->buf || frame->len == 0) {
       Serial.println("[Motion] Invalid frame");
       return result;
     }
 
-    // Check cooldown
-    if (millis() - lastDetectionTime < config.cooldownMs) {
-      return result;
-    }
+    // Check if in cooldown period
+    bool inCooldown = (millis() - lastDetectionTime < config.cooldownMs);
 
     // For JPEG frames, we need to decode first
     // For now, we'll use a simple JPEG size heuristic
     // (proper implementation would decode to grayscale)
     if (frame->format == PIXFORMAT_JPEG) {
-      return detectFromJpegSize(frame);
+      return detectFromJpegSize(frame, inCooldown);
     }
 
     // Grayscale frame comparison
@@ -141,8 +141,14 @@ public:
       }
     }
 
-    // Store current frame for next comparison
+    // ALWAYS store current frame for next comparison
+    // This prevents comparing against stale frames after cooldown
     memcpy(prevFrame, frame->buf, frameSize);
+
+    // If in cooldown, don't report detection (but we already updated prevFrame)
+    if (inCooldown) {
+      return result;
+    }
 
     // Check if motion detected
     if (result.changedBlocks > 0) {
@@ -159,6 +165,9 @@ public:
       float motionArea = (float)result.width * result.height;
       result.sizePercent = (motionArea / totalArea) * 100.0;
 
+      // Calculate aspect ratio (for rodent-shape filtering)
+      result.aspectRatio = (result.height > 0) ? (float)result.width / result.height : 0.0f;
+
       // Apply size filter
       if (result.sizePercent < config.minSizePercent) {
         result.sizeFiltered = true;
@@ -170,6 +179,16 @@ public:
         result.detected = false;  // Too large - probably person/pet
         Serial.printf("[Motion] Filtered: too large (%.1f%% > %.1f%%)\n",
                       result.sizePercent, config.maxSizePercent);
+      }
+
+      // Apply aspect ratio filter
+      // Rodents have aspect ratios between 0.3 and 3.0
+      // Ultra-wide or ultra-tall shapes are likely shadows/reflections
+      if (result.detected && (result.aspectRatio < 0.3f || result.aspectRatio > 3.0f)) {
+        result.aspectFiltered = true;
+        result.detected = false;
+        Serial.printf("[Motion] Filtered: bad aspect ratio (%.2f not in 0.3-3.0)\n",
+                      result.aspectRatio);
       }
 
       // Calculate confidence based on block coverage and size
@@ -189,20 +208,23 @@ public:
 
   /**
    * Simple motion detection based on JPEG file size changes.
-   * Useful as a quick pre-filter before full analysis.
+   * Compares against rolling average of recent frames to avoid drift.
+   *
+   * @param frame Current camera frame
+   * @param inCooldown If true, still update history but don't report detection
    */
-  MotionResult detectFromJpegSize(camera_fb_t* frame) {
+  MotionResult detectFromJpegSize(camera_fb_t* frame, bool inCooldown = false) {
     static size_t prevJpegSize = 0;
     static size_t jpegSizeHistory[5] = {0};
     static int historyIdx = 0;
 
-    MotionResult result = {false, false, 0, 0, 0, 0, 0.0, 0, 0, 0.0};
+    MotionResult result = {false, false, false, 0, 0, 0, 0, 0.0, 0.0, 0, 0, 0.0};
 
-    // Store in history
+    // ALWAYS store in history - this keeps the baseline current even during cooldown
     jpegSizeHistory[historyIdx] = frame->len;
     historyIdx = (historyIdx + 1) % 5;
 
-    // Calculate average size
+    // Calculate average size from history
     size_t avgSize = 0;
     int validCount = 0;
     for (int i = 0; i < 5; i++) {
@@ -219,12 +241,21 @@ public:
       return result;
     }
 
+    // Always update prevJpegSize to track scene
+    prevJpegSize = frame->len;
+
+    // If in cooldown, don't evaluate for detection (but history is already updated)
+    if (inCooldown) {
+      return result;
+    }
+
     // Check for significant size change from average
     float sizeDiff = abs((float)frame->len - (float)avgSize) / (float)avgSize * 100.0;
 
     // JPEG size changes significantly when scene content changes
-    // Threshold of ~10% works well for motion detection
-    if (sizeDiff > 10.0) {
+    // Threshold of 25% - JPEG compression has ~10-15% natural variability
+    // Only trigger on substantial changes that indicate real motion
+    if (sizeDiff > 25.0) {
       result.detected = true;
       result.sizePercent = sizeDiff;  // Use as proxy for motion amount
       result.confidence = min(1.0f, sizeDiff / 30.0f);
@@ -234,9 +265,10 @@ public:
       result.y = frame->height / 4;
       result.width = frame->width / 2;
       result.height = frame->height / 2;
+      result.aspectRatio = 1.0f;  // Unknown for JPEG size method
 
       // Apply size filter (approximate)
-      if (sizeDiff < 3.0) {
+      if (sizeDiff < 5.0) {
         result.sizeFiltered = true;
         result.detected = false;
       } else if (sizeDiff > 50.0) {
@@ -251,8 +283,6 @@ public:
                       sizeDiff, result.confidence);
       }
     }
-
-    prevJpegSize = frame->len;
     return result;
   }
 

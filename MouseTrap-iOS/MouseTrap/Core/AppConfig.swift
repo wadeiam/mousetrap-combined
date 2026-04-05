@@ -3,9 +3,10 @@ import Foundation
 enum AppConfig {
     // MARK: - Server Configuration
 
-    static let serverBaseURL = "http://192.168.133.110:4000"
+    // Use internal IP when on local network (hairpin NAT workaround)
+    static let serverBaseURL = "http://10.0.0.220:4000"
     static let apiBaseURL = "\(serverBaseURL)/api"
-    static let wsBaseURL = "ws://192.168.133.110:4000"
+    static let wsBaseURL = "ws://10.0.0.220:4000"
 
     // MARK: - App Info
 

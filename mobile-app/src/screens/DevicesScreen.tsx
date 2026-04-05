@@ -22,6 +22,8 @@ export function DevicesScreen() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [lastSuccessfulFetch, setLastSuccessfulFetch] = useState<Date | null>(null);
 
   const fetchDevices = async (showRefresh = false) => {
     if (showRefresh) setIsRefreshing(true);
@@ -30,11 +32,19 @@ export function DevicesScreen() {
     const result = await api.getDevices();
     if (result.success && result.data) {
       setDevices(result.data);
+      setServerError(null);
+      setLastSuccessfulFetch(new Date());
+    } else {
+      setServerError(result.error || 'Unable to reach server');
     }
 
     setIsLoading(false);
     setIsRefreshing(false);
   };
+
+  // Count offline devices for the warning banner
+  const offlineDevices = devices.filter(d => d.status === 'offline');
+  const triggeredDevices = devices.filter(d => d.trap_state === 'triggered');
 
   useFocusEffect(
     useCallback(() => {
@@ -128,6 +138,52 @@ export function DevicesScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Server Connection Error Banner */}
+      {serverError && (
+        <View style={styles.errorBanner}>
+          <Text style={styles.errorBannerIcon}>⚠️</Text>
+          <View style={styles.errorBannerContent}>
+            <Text style={styles.errorBannerTitle}>Server Unreachable</Text>
+            <Text style={styles.errorBannerText}>{serverError}</Text>
+            {lastSuccessfulFetch && (
+              <Text style={styles.errorBannerSubtext}>
+                Last connected: {lastSuccessfulFetch.toLocaleTimeString()}
+              </Text>
+            )}
+          </View>
+        </View>
+      )}
+
+      {/* Offline Devices Warning */}
+      {!serverError && offlineDevices.length > 0 && (
+        <View style={styles.warningBanner}>
+          <Text style={styles.warningBannerIcon}>📡</Text>
+          <View style={styles.warningBannerContent}>
+            <Text style={styles.warningBannerTitle}>
+              {offlineDevices.length} Device{offlineDevices.length > 1 ? 's' : ''} Offline
+            </Text>
+            <Text style={styles.warningBannerText}>
+              {offlineDevices.map(d => d.name).join(', ')}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {/* Triggered Traps Alert */}
+      {!serverError && triggeredDevices.length > 0 && (
+        <View style={styles.alertBanner}>
+          <Text style={styles.alertBannerIcon}>🚨</Text>
+          <View style={styles.alertBannerContent}>
+            <Text style={styles.alertBannerTitle}>
+              {triggeredDevices.length} Trap{triggeredDevices.length > 1 ? 's' : ''} Triggered!
+            </Text>
+            <Text style={styles.alertBannerText}>
+              {triggeredDevices.map(d => d.name).join(', ')}
+            </Text>
+          </View>
+        </View>
+      )}
+
       <FlatList
         data={devices}
         renderItem={renderDevice}
@@ -251,5 +307,82 @@ const styles = StyleSheet.create({
   emptySubtext: {
     fontSize: 14,
     color: '#888',
+  },
+  // Server error banner (red)
+  errorBanner: {
+    flexDirection: 'row',
+    backgroundColor: '#b71c1c',
+    padding: 12,
+    alignItems: 'center',
+  },
+  errorBannerIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  errorBannerContent: {
+    flex: 1,
+  },
+  errorBannerTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  errorBannerText: {
+    color: '#ffcdd2',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  errorBannerSubtext: {
+    color: '#ef9a9a',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  // Offline devices warning (orange)
+  warningBanner: {
+    flexDirection: 'row',
+    backgroundColor: '#e65100',
+    padding: 12,
+    alignItems: 'center',
+  },
+  warningBannerIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  warningBannerContent: {
+    flex: 1,
+  },
+  warningBannerTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  warningBannerText: {
+    color: '#ffe0b2',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  // Triggered trap alert (red pulsing)
+  alertBanner: {
+    flexDirection: 'row',
+    backgroundColor: '#d32f2f',
+    padding: 12,
+    alignItems: 'center',
+  },
+  alertBannerIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  alertBannerContent: {
+    flex: 1,
+  },
+  alertBannerTitle: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  alertBannerText: {
+    color: '#ffcdd2',
+    fontSize: 12,
+    marginTop: 2,
   },
 });

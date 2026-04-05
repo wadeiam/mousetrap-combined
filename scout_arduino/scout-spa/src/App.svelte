@@ -1,96 +1,85 @@
 <script>
-  import Home from './pages/Home.svelte';
+  import Layout from './components/Layout.svelte';
+  import { currentRoute } from './lib/router.js';
+
+  // Import all page components
+  import Dashboard from './pages/Dashboard.svelte';
   import Gallery from './pages/Gallery.svelte';
-  import Settings from './pages/Settings.svelte';
+  import Calibration from './pages/Calibration.svelte';
+  import ServoSettings from './pages/ServoSettings.svelte';
+  import Logs from './pages/Logs.svelte';
+  import Firmware from './pages/Firmware.svelte';
+  import TestAlert from './pages/TestAlert.svelte';
   import Setup from './pages/Setup.svelte';
+  import WiFi from './pages/WiFi.svelte';
+  import Claim from './pages/Claim.svelte';
+  import CameraSettings from './pages/CameraSettings.svelte';
+  import SystemStatus from './pages/SystemStatus.svelte';
 
-  let currentPage = 'home';
-  let status = null;
-  let needsSetup = false;
+  // Route matching
+  $: component = getComponent($currentRoute);
+  $: isSetupRoute = $currentRoute === '/setup' || $currentRoute === 'setup';
 
-  // Check device status on load
-  async function checkStatus() {
-    try {
-      const res = await fetch('/api/status');
-      status = await res.json();
-      needsSetup = !status.claimed && !status.standalone;
-    } catch (e) {
-      console.error('Failed to get status:', e);
-    }
-  }
+  function getComponent(path) {
+    // Normalize path
+    const route = path.startsWith('/') ? path : '/' + path;
 
-  checkStatus();
+    // Match routes
+    if (route === '/' || route === '') return Dashboard;
+    if (route === '/gallery') return Gallery;
+    if (route === '/calibration') return Calibration;
+    if (route === '/servo') return ServoSettings;
+    if (route === '/logs') return Logs;
+    if (route === '/status') return Logs; // Alias for logs
+    if (route === '/firmware') return Firmware;
+    if (route.startsWith('/reboot')) return Firmware; // Handle reboot on firmware page
+    if (route === '/test') return TestAlert;
+    if (route === '/setup') return Setup;
+    if (route === '/wifi') return WiFi;
+    if (route === '/claim') return Claim;
+    if (route === '/camera-settings') return CameraSettings;
+    if (route === '/system-status') return SystemStatus;
 
-  function navigate(page) {
-    currentPage = page;
+    // Default to Dashboard for unknown routes
+    return Dashboard;
   }
 </script>
 
-<div class="app">
-  <header class="header">
-    <h1>Scout Device</h1>
-  </header>
-
-  <main class="main-content">
-    {#if needsSetup}
-      <Setup on:complete={() => { needsSetup = false; checkStatus(); }} />
-    {:else if currentPage === 'home'}
-      <Home {status} on:refresh={checkStatus} />
-    {:else if currentPage === 'gallery'}
-      <Gallery />
-    {:else if currentPage === 'settings'}
-      <Settings {status} on:refresh={checkStatus} />
-    {/if}
-  </main>
-
-  {#if !needsSetup}
-    <nav class="nav">
-      <div
-        class="nav-item"
-        class:active={currentPage === 'home'}
-        on:click={() => navigate('home')}
-        on:keydown={(e) => e.key === 'Enter' && navigate('home')}
-        role="button"
-        tabindex="0"
-      >
-        <span class="nav-icon">🏠</span>
-        Home
-      </div>
-      <div
-        class="nav-item"
-        class:active={currentPage === 'gallery'}
-        on:click={() => navigate('gallery')}
-        on:keydown={(e) => e.key === 'Enter' && navigate('gallery')}
-        role="button"
-        tabindex="0"
-      >
-        <span class="nav-icon">🖼️</span>
-        Gallery
-      </div>
-      <div
-        class="nav-item"
-        class:active={currentPage === 'settings'}
-        on:click={() => navigate('settings')}
-        on:keydown={(e) => e.key === 'Enter' && navigate('settings')}
-        role="button"
-        tabindex="0"
-      >
-        <span class="nav-icon">⚙️</span>
-        Settings
-      </div>
-    </nav>
-  {/if}
-</div>
+<!-- Setup page is standalone (no Layout wrapper) for captive portal context -->
+{#if isSetupRoute}
+  <svelte:component this={component} />
+{:else}
+  <Layout>
+    <svelte:component this={component} />
+  </Layout>
+{/if}
 
 <style>
-  .app {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    background: #111;
+    color: #ddd;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow-x: hidden; /* Hide horizontal scrollbar */
   }
 
-  .main-content {
-    flex: 1;
-    padding-bottom: 70px;
+  :global(html) {
+    overflow-x: hidden; /* Hide horizontal scrollbar on html element */
+  }
+
+  /* Hide scrollbars but allow scrolling */
+  :global(*::-webkit-scrollbar) {
+    display: none; /* Chrome, Safari, Edge */
+  }
+
+  :global(*) {
+    box-sizing: border-box; /* Ensure padding doesn't add to width */
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+
+  :global(button) {
+    font-family: inherit;
   }
 </style>

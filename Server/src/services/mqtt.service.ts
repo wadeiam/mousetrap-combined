@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { mqttMetrics } from './mqtt-metrics';
 import mqtt, { MqttClient, IClientOptions } from 'mqtt';
 import { Pool } from 'pg';
 import { logger } from './logger.service';
@@ -57,8 +58,11 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private isConnecting: boolean = false;
   private isShuttingDown: boolean = false;
+  private connectionWatchdog: NodeJS.Timeout | null = null;
+  private lastConnectedAt: number = 0;
   private deviceHeartbeatTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly DEVICE_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+  private readonly WATCHDOG_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
 
   // Credential rotation ACK tracking
   private pendingRotations: Map<string, PendingRotation> = new Map();
@@ -156,12 +160,21 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       logger.info('MQTT connected to broker');
       this.reconnectAttempts = 0;
       this.isConnecting = false;
+      this.lastConnectedAt = Date.now();
 
       // Subscribe to all necessary topics
       this.subscribeToTopics();
 
       // Publish server online status
       this.publishServerStatus(true);
+
+      // Mark stale devices as offline (handles server restart scenario)
+      // When the server restarts, heartbeat timers are cleared but devices
+      // may still be marked online in the database with old last_seen times
+      this.markStaleDevicesOffline();
+
+      // Start connection watchdog
+      this.startConnectionWatchdog();
 
       this.emit('connected');
     });
@@ -227,6 +240,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       { topic: 'tenant/+/device/+/rotation_ack', qos: this.config.qos.commands },
       // Subscribe to motion events from Scout devices (AI classification)
       { topic: 'tenant/+/device/+/motion', qos: this.config.qos.default },
+      // Subscribe to device settings responses
+      { topic: 'tenant/+/device/+/settings', qos: this.config.qos.commands },
     ];
 
     subscriptions.forEach(({ topic, qos }) => {
@@ -248,6 +263,7 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       const parsedTopic = this.parseTopic(topic);
       const message = JSON.parse(payload.toString());
 
+      mqttMetrics.messagesReceived++;
       console.log(`[MQTT] Message received on ${topic}:`, message);
 
       switch (parsedTopic.type) {
@@ -277,6 +293,10 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
         case 'motion_event':
           await this.handleMotionEvent(parsedTopic, message as MotionEventMessage);
+          break;
+
+        case 'device_settings':
+          this.handleDeviceSettings(parsedTopic, message);
           break;
 
         default:
@@ -356,6 +376,15 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       };
     }
 
+    // tenant/{tenantId}/device/{macAddress}/settings
+    if (parts[0] === 'tenant' && parts[2] === 'device' && parts[4] === 'settings') {
+      return {
+        type: 'device_settings',
+        tenantId: parts[1],
+        macAddress: parts[3],
+      };
+    }
+
     // tenant/{tenantId}/firmware/latest
     if (parts[0] === 'tenant' && parts[2] === 'firmware' && parts[3] === 'latest') {
       return {
@@ -401,12 +430,12 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       const query = `
         UPDATE devices SET
           online = $3,
-          firmware_version = $4,
-          filesystem_version = $5,
-          uptime = $6,
-          heap_free = $7,
-          rssi = $8,
-          local_ip = $9,
+          firmware_version = COALESCE($4, firmware_version),
+          filesystem_version = COALESCE($5, filesystem_version),
+          uptime = COALESCE($6, uptime),
+          heap_free = COALESCE($7, heap_free),
+          rssi = COALESCE($8, rssi),
+          local_ip = COALESCE($9, local_ip),
           mac_address = COALESCE(mac_address, $2),
           last_seen = NOW(),
           updated_at = NOW()
@@ -426,7 +455,19 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       ]);
 
       if (result.rowCount === 0) {
+        mqttMetrics.deviceNotFoundErrors++;
         console.warn(`[MQTT] Device not found for status update: tenant=${tenantId}, mqtt_client_id=${macAddress}`);
+
+        // Clear the stale retained message to prevent it from replaying on restart
+        const staleTopic = `tenant/${tenantId}/device/${macAddress}/status`;
+        this.client?.publish(staleTopic, Buffer.alloc(0), { retain: true, qos: 1 }, (err) => {
+          if (err) {
+            console.error(`[MQTT] Failed to clear stale retained message on ${staleTopic}:`, err);
+          } else {
+            mqttMetrics.staleMessagesCleared++;
+            console.log(`[MQTT] Cleared stale retained message: ${staleTopic}`);
+          }
+        });
         return;
       }
 
@@ -479,27 +520,23 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       return;
     }
 
-    // Normalize timestamp to milliseconds
-    // Device may send seconds (10 digits) or milliseconds (13 digits)
-    let timestamp = message.timestamp || Date.now();
-    if (timestamp < 10000000000) {
-      // Timestamp is in seconds, convert to milliseconds
-      timestamp = timestamp * 1000;
-    }
+    // Always use server time for snapshot timestamp - device may send unreliable values (uptime, no RTC, etc.)
+    const timestamp = Date.now();
     const imageData = message.image;
 
     try {
-      // Store snapshot in database (timestamp is now in ms, divide by 1000 for to_timestamp)
-      // Use AT TIME ZONE 'UTC' to store as UTC in the timestamp without timezone column
+      // Store snapshot in database - use NOW() for accurate server timestamp
+      // Also update last_seen since we just received data from the device
       const query = `
         UPDATE devices SET
           last_snapshot = $3,
-          last_snapshot_at = (to_timestamp($4 / 1000.0) AT TIME ZONE 'UTC'),
+          last_snapshot_at = NOW(),
+          last_seen = NOW(),
           updated_at = NOW()
         WHERE tenant_id = $1 AND mqtt_client_id = $2
       `;
 
-      await this.db.query(query, [tenantId, macAddress.toUpperCase(), imageData, timestamp]);
+      await this.db.query(query, [tenantId, macAddress.toUpperCase(), imageData]);
 
       console.log(`[MQTT] Snapshot stored for device: ${macAddress} (tenant: ${tenantId})`);
 
@@ -603,9 +640,9 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     }
 
     try {
-      // Get device ID from MAC address
+      // Get device ID and current snapshot from MAC address
       const deviceQuery = await this.db.query(
-        'SELECT id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        'SELECT id, last_snapshot, last_snapshot_at FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
         [tenantId, macAddress.toUpperCase()]
       );
 
@@ -615,6 +652,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       }
 
       const deviceId = deviceQuery.rows[0].id;
+      const alertSnapshot = deviceQuery.rows[0].last_snapshot;
+      const alertSnapshotAt = deviceQuery.rows[0].last_snapshot_at;
 
       // Check if device already has an active alert - only one alert per trap
       const existingAlert = await this.db.query(
@@ -636,10 +675,20 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       `;
 
       const severity = message.severity || 'medium';
+      // Convert snapshot_at to ISO string for JSONB storage
+      let snapshotAtIso = null;
+      if (alertSnapshotAt) {
+        snapshotAtIso = alertSnapshotAt instanceof Date
+          ? alertSnapshotAt.toISOString()
+          : new Date(alertSnapshotAt).toISOString();
+      }
       const sensorData = {
         alert_type: message.alert_type || 'trap_triggered',
         message: message.message || 'Motion detected',
         ...message,
+        // Capture snapshot at time of alert
+        snapshot: alertSnapshot || null,
+        snapshot_at: snapshotAtIso,
       };
 
       const result = await this.db.query(insertQuery, [
@@ -719,9 +768,9 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
    */
   private async syncDeviceAlertState(tenantId: string, macAddress: string, status: DeviceStatusMessage): Promise<void> {
     try {
-      // Get device ID
+      // Get device ID and snapshot
       const deviceQuery = await this.db.query(
-        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+        'SELECT id, name, last_snapshot, last_snapshot_at FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
         [tenantId, macAddress.toUpperCase()]
       );
 
@@ -732,6 +781,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
 
       const deviceId = deviceQuery.rows[0].id;
       const deviceName = deviceQuery.rows[0].name || macAddress;
+      const alertSnapshot = deviceQuery.rows[0].last_snapshot;
+      const alertSnapshotAt = deviceQuery.rows[0].last_snapshot_at;
 
       // Check if there's already an active (non-resolved) alert for this device
       const activeAlertQuery = await this.db.query(
@@ -758,14 +809,25 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
         INSERT INTO alerts (
           device_id, tenant_id, severity, status, sensor_data, triggered_at
         ) VALUES ($1, $2, 'high', 'new', $3, $4)
+        ON CONFLICT (device_id, triggered_at) WHERE status <> 'resolved'
+        DO NOTHING
         RETURNING id
       `;
 
+      // Convert snapshot_at to ISO string for JSONB storage
+      let snapshotAtIso = null;
+      if (alertSnapshotAt) {
+        snapshotAtIso = alertSnapshotAt instanceof Date
+          ? alertSnapshotAt.toISOString()
+          : new Date(alertSnapshotAt).toISOString();
+      }
       const sensorData = {
         alert_type: 'trap_triggered',
         message: 'Alert synced from device state on reconnect',
         synced_from_device: true,
         alert_level: status.alert_level || 1,
+        snapshot: alertSnapshot || null,
+        snapshot_at: snapshotAtIso,
       };
 
       const result = await this.db.query(insertQuery, [
@@ -774,6 +836,12 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
         JSON.stringify(sensorData),
         triggeredAt,
       ]);
+
+      // ON CONFLICT DO NOTHING returns no rows if alert already exists (race condition)
+      if (result.rows.length === 0) {
+        console.log(`[MQTT] Alert already exists for device ${macAddress} at ${triggeredAt}, skipping duplicate`);
+        return;
+      }
 
       const alertId = result.rows[0].id;
 
@@ -989,7 +1057,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       });
 
       // If rodent detected with high confidence, create an alert
-      if (classification.classification === 'rodent' && classification.confidence > 0.5) {
+      // Threshold of 0.6 reduces false positives while catching real rodents
+      if (classification.classification === 'rodent' && classification.confidence > 0.6) {
         // Check if device already has an active alert - only one alert per trap
         const existingAlert = await this.db.query(
           `SELECT id FROM alerts WHERE device_id = $1 AND status IN ('new', 'acknowledged') LIMIT 1`,
@@ -1008,62 +1077,72 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
             RETURNING id
           `;
 
-        const severity = classification.confidence > 0.8 ? 'high' : 'medium';
-        const sensorData = {
-          alert_type: 'rodent_detected',
-          message: `Rodent detected with ${(classification.confidence * 100).toFixed(0)}% confidence`,
-          classification: classification.classification,
-          confidence: classification.confidence,
-          topMatch: classification.topMatch,
-          classificationId,
-          source: 'ai_classification',
-        };
+          const severity = classification.confidence > 0.8 ? 'high' : 'medium';
+          const sensorData = {
+            alert_type: 'rodent_detected',
+            message: `Rodent detected with ${(classification.confidence * 100).toFixed(0)}% confidence`,
+            classification: classification.classification,
+            confidence: classification.confidence,
+            topMatch: classification.topMatch,
+            classificationId,
+            source: 'ai_classification',
+          };
 
-        const alertResult = await this.db.query(alertQuery, [
-          deviceId,
-          tenantId,
-          severity,
-          'new',
-          JSON.stringify(sensorData),
-        ]);
-
-        const alertId = alertResult.rows[0].id;
-
-        // Emit WebSocket event for real-time notification
-        this.emit('device:alert', {
-          id: alertId,
-          deviceId,
-          tenantId,
-          severity,
-          status: 'new',
-          type: 'rodent_detected',
-          message: sensorData.message,
-          createdAt: new Date().toISOString(),
-        });
-
-        // Send push notification
-        const pushService = getPushService();
-        if (pushService) {
-          pushService.handleAlertNotification({
-            alertId,
+          const alertResult = await this.db.query(alertQuery, [
             deviceId,
-            deviceName,
-            alertType: 'rodent_detected',
-            severity,
             tenantId,
-            message: sensorData.message,
-          }).catch((err: Error) => {
-            logger.error('Failed to send push notification for rodent detection', { error: err.message, alertId });
-          });
-        }
+            severity,
+            'new',
+            JSON.stringify(sensorData),
+          ]);
 
-        // Notify emergency contacts
-        this.notifyEmergencyContactsImmediately(tenantId, deviceName, alertId).catch((err: Error) => {
-          logger.error('Failed to notify emergency contacts for rodent detection', { error: err.message, alertId });
-        });
+          const alertId = alertResult.rows[0].id;
+
+          // Emit WebSocket event for real-time notification
+          this.emit('device:alert', {
+            id: alertId,
+            deviceId,
+            tenantId,
+            severity,
+            status: 'new',
+            type: 'rodent_detected',
+            message: sensorData.message,
+            createdAt: new Date().toISOString(),
+          });
+
+          // Send push notification
+          const pushService = getPushService();
+          if (pushService) {
+            pushService.handleAlertNotification({
+              alertId,
+              deviceId,
+              deviceName,
+              alertType: 'rodent_detected',
+              severity,
+              tenantId,
+              message: sensorData.message,
+            }).catch((err: Error) => {
+              logger.error('Failed to send push notification for rodent detection', { error: err.message, alertId });
+            });
+          }
+
+          // Notify emergency contacts
+          this.notifyEmergencyContactsImmediately(tenantId, deviceName, alertId).catch((err: Error) => {
+            logger.error('Failed to notify emergency contacts for rodent detection', { error: err.message, alertId });
+          });
 
           console.log(`[MQTT] Alert ${alertId} created for rodent detection on ${deviceName}`);
         }
+      } else {
+        // Log non-rodent classification for monitoring false positive rate
+        logger.info('Motion event classified as non-rodent (no alert)', {
+          deviceId,
+          tenantId,
+          classification: classification.classification,
+          confidence: classification.confidence,
+          topMatch: classification.topMatch,
+          reason: classification.classification !== 'rodent' ? 'not_rodent' : 'confidence_below_threshold',
+        });
       }
 
       // Emit classification event for WebSocket/dashboard updates
@@ -1237,6 +1316,78 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   }
 
   /**
+   * Mark stale devices as offline on server startup
+   *
+   * When the server restarts, all heartbeat timers are cleared but devices
+   * may still be marked as online in the database with old last_seen timestamps.
+   * This method finds those stale devices and marks them offline, emitting
+   * the appropriate events so the offline-escalation service can track them.
+   */
+  private async markStaleDevicesOffline(): Promise<void> {
+    try {
+      // Find devices that are marked online but haven't been seen in over 15 minutes
+      const staleDevicesQuery = `
+        SELECT id, tenant_id, mqtt_client_id, name, last_seen
+        FROM devices
+        WHERE online = true
+          AND last_seen < NOW() - INTERVAL '15 minutes'
+      `;
+
+      const result = await this.db.query(staleDevicesQuery);
+
+      if (result.rows.length === 0) {
+        console.log('[MQTT] No stale devices found on startup');
+        return;
+      }
+
+      console.log(`[MQTT] Found ${result.rows.length} stale device(s) on startup, marking offline...`);
+
+      // Mark each stale device as offline
+      const updateQuery = `
+        UPDATE devices
+        SET online = false, updated_at = NOW()
+        WHERE id = $1
+      `;
+
+      for (const device of result.rows) {
+        try {
+          await this.db.query(updateQuery, [device.id]);
+
+          // Emit offline event so offline-escalation service can track it
+          this.emit('device:offline', {
+            tenantId: device.tenant_id,
+            macAddress: device.mqtt_client_id?.toUpperCase(),
+          });
+
+          const lastSeenMinutesAgo = device.last_seen
+            ? Math.round((Date.now() - new Date(device.last_seen).getTime()) / 60000)
+            : 'unknown';
+
+          console.log(`[MQTT] Marked stale device offline: ${device.name || device.mqtt_client_id} (last seen ${lastSeenMinutesAgo} minutes ago)`);
+          logger.info('Stale device marked offline on startup', {
+            deviceId: device.id,
+            tenantId: device.tenant_id,
+            mqttClientId: device.mqtt_client_id,
+            deviceName: device.name,
+            lastSeenMinutesAgo,
+          });
+        } catch (error) {
+          console.error(`[MQTT] Error marking stale device ${device.id} offline:`, error);
+        }
+      }
+
+      logger.info('Stale devices cleanup completed on startup', {
+        devicesMarkedOffline: result.rows.length,
+      });
+    } catch (error) {
+      console.error('[MQTT] Error checking for stale devices:', error);
+      logger.error('Error checking for stale devices on startup', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Publish firmware update notification
    */
   public async publishFirmwareUpdate(
@@ -1346,6 +1497,61 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
     });
 
     await this.publishDeviceCommand(tenantId, macAddress, command);
+  }
+
+  /**
+   * Request device settings and wait for response
+   * @param settingsType - Type of settings to request: 'camera-settings', 'calibration', 'servo', 'motion-config'
+   * @returns Promise that resolves with settings data or rejects on timeout
+   */
+  public async requestDeviceSettings(
+    tenantId: string,
+    macAddress: string,
+    settingsType: string
+  ): Promise<any> {
+    const requestId = `settings-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    // Map settings type to command
+    const commandMap: Record<string, DeviceCommandMessage['command']> = {
+      'camera-settings': 'get_camera_settings',
+      'calibration': 'get_calibration',
+      'servo': 'get_servo_settings',
+      'motion-config': 'get_motion_config',
+    };
+
+    const command = commandMap[settingsType];
+    if (!command) {
+      throw new Error(`Unknown settings type: ${settingsType}`);
+    }
+
+    // Create a promise that will be resolved when we receive the response
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.removeListener('device:settings' as any, responseHandler);
+        reject(new Error('Device did not respond within timeout'));
+      }, 10000); // 10 second timeout
+
+      const responseHandler = (data: any) => {
+        if (data.requestId === requestId || data.macAddress === macAddress.toUpperCase()) {
+          clearTimeout(timeout);
+          this.removeListener('device:settings' as any, responseHandler);
+          resolve(data.settings || data);
+        }
+      };
+
+      this.on('device:settings' as any, responseHandler);
+
+      // Send the request
+      this.publishDeviceCommand(tenantId, macAddress, {
+        command,
+        timestamp: Date.now(),
+        requestId,
+      }).catch((err) => {
+        clearTimeout(timeout);
+        this.removeListener('device:settings' as any, responseHandler);
+        reject(err);
+      });
+    });
   }
 
   /**
@@ -1599,6 +1805,23 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   }
 
   /**
+   * Handle device settings response
+   * Emits 'device:settings' event for requestDeviceSettings to catch
+   */
+  private handleDeviceSettings(parsedTopic: ParsedTopic, message: any): void {
+    const { macAddress } = parsedTopic;
+
+    console.log(`[MQTT] Settings response received from ${macAddress}:`, message);
+
+    // Emit the settings event with the device info and settings data
+    this.emit('device:settings' as any, {
+      macAddress: macAddress?.toUpperCase(),
+      requestId: message.requestId,
+      settings: message,
+    });
+  }
+
+  /**
    * Get pending rotation by device
    * Useful for checking if a device has a rotation in progress
    */
@@ -1609,6 +1832,48 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Connection watchdog — detects silent MQTT disconnections and forces reconnect.
+   * The mqtt.js library can silently lose its connection without firing 'close' or 'offline'
+   * events (e.g., TCP half-open). This watchdog catches that.
+   */
+  private startConnectionWatchdog(): void {
+    if (this.connectionWatchdog) {
+      clearInterval(this.connectionWatchdog);
+    }
+
+    this.connectionWatchdog = setInterval(() => {
+      if (this.isShuttingDown) return;
+
+      if (!this.client?.connected) {
+        const disconnectedFor = this.lastConnectedAt
+          ? Math.round((Date.now() - this.lastConnectedAt) / 1000)
+          : 'unknown';
+        console.error(`[MQTT-WATCHDOG] Connection dead (disconnected for ${disconnectedFor}s) — forcing reconnect`);
+        logger.error('MQTT watchdog detected dead connection', { disconnectedForSeconds: disconnectedFor });
+
+        // Clean up the dead client
+        try {
+          this.client?.end(true);
+        } catch {
+          // Ignore errors on dead client
+        }
+        this.client = null;
+        this.isConnecting = false;
+
+        // Force immediate reconnect
+        this.scheduleReconnect();
+      }
+    }, this.WATCHDOG_INTERVAL_MS);
+  }
+
+  private stopConnectionWatchdog(): void {
+    if (this.connectionWatchdog) {
+      clearInterval(this.connectionWatchdog);
+      this.connectionWatchdog = null;
+    }
   }
 
   /**
@@ -1650,7 +1915,8 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
   public async disconnect(): Promise<void> {
     this.isShuttingDown = true;
 
-    // Clear reconnect timer
+    // Clear watchdog and reconnect timer
+    this.stopConnectionWatchdog();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

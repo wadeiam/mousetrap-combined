@@ -8,9 +8,9 @@
 #ifndef CAMERA_PINS_H
 #define CAMERA_PINS_H
 
-// Default to ESP32-S3 CAM LCD (same as trap device)
+// Default to ESP32-S3-EYE (same as trap device)
 #if !defined(CAMERA_MODEL_ESP32S3_CAM_LCD) && !defined(CAMERA_MODEL_AI_THINKER) && !defined(CAMERA_MODEL_ESP32S3_EYE) && !defined(CAMERA_MODEL_XIAO_ESP32S3)
-#define CAMERA_MODEL_ESP32S3_CAM_LCD
+#define CAMERA_MODEL_ESP32S3_EYE
 #endif
 
 #if defined(CAMERA_MODEL_ESP32S3_CAM_LCD)

@@ -7,9 +7,12 @@ class DashboardViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var error: String?
     @Published var dismissedOfflineDeviceIds: Set<String> = []
+    @Published var isUsingCachedData = false
+    @Published var cacheAge: TimeInterval?
 
     private let apiClient = APIClient.shared
     private let dismissedDevicesKey = "DismissedOfflineDevices"
+    private var loadTask: Task<Void, Never>?
 
     init() {
         loadDismissedDevices()
@@ -18,6 +21,9 @@ class DashboardViewModel: ObservableObject {
     // MARK: - Data Loading
 
     func loadData() async {
+        // Cancel any existing load and ignore if already loading
+        guard !isLoading else { return }
+
         isLoading = true
         error = nil
 
@@ -63,13 +69,22 @@ class DashboardViewModel: ObservableObject {
                     alertingDevices: response.alertingDevices ?? 0,
                     activeAlerts: response.activeAlerts ?? 0,
                     criticalAlerts: response.criticalAlerts ?? 0,
-                    recentAlerts: response.recentAlerts
+                    recentAlerts: response.recentAlerts,
+                    scoutStats: nil,
+                    recentMotionEvents: nil
                 )
             }
 
         } catch let apiError as APIError {
+            // Ignore cancelled requests
+            if case .networkError(let underlying) = apiError,
+               (underlying as NSError).code == NSURLErrorCancelled {
+                return
+            }
             error = apiError.errorDescription
         } catch {
+            // Ignore cancelled requests
+            if (error as NSError).code == NSURLErrorCancelled { return }
             self.error = error.localizedDescription
         }
     }
@@ -101,8 +116,24 @@ class DashboardViewModel: ObservableObject {
                 devices = deviceList
             }
 
+            // Cache devices on successful load
+            if !devices.isEmpty {
+                LocalDeviceCache.shared.cacheDevices(devices)
+                isUsingCachedData = false
+                cacheAge = nil
+            }
+
+            // Start LAN monitoring
+            LANDiscoveryService.shared.startMonitoring(devices: devices)
+
         } catch {
-            // Don't overwrite error from stats - devices are secondary
+            // Fall back to cached devices if we have nothing
+            if devices.isEmpty, let cached = LocalDeviceCache.shared.loadCachedDevices() {
+                devices = cached
+                isUsingCachedData = true
+                cacheAge = LocalDeviceCache.shared.cacheAge
+                LANDiscoveryService.shared.startMonitoring(devices: devices)
+            }
             print("[Dashboard] Failed to load devices: \(error)")
         }
     }

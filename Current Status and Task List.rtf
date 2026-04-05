@@ -1,0 +1,168 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2761
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 Menlo-Regular;\f1\fnil\fcharset0 Menlo-Bold;}
+{\colortbl;\red255\green255\blue255;\red255\green255\blue255;\red0\green0\blue0;\red175\green221\blue255;
+}
+{\*\expandedcolortbl;;\cspthree\c100000\c100000\c100000;\csgray\c0;\cssrgb\c73675\c89410\c100000;
+}
+\margl1440\margr1440\vieww51000\viewh27180\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs22 \cf2 \CocoaLigature0 \uc0\u9210 \cf3  Now I have a clear picture. Let me provide a summary and task list.\
+\
+  ---\
+  
+\f1\b Where We Left Off
+\f0\b0 \
+\
+  
+\f1\b Scout captive portal is fixed and working:
+\f0\b0 \
+  - Two-level redirect pattern implemented (matching Trap)\
+  - Synchronous WiFi scanning with 4-attempt retry\
+  - Registration flow working\
+  - Documentation completed in \cf4 scout_arduino/README.md\cf3 \
+\
+  ---\
+  
+\f1\b Network Setup Task List
+\f0\b0 \
+\
+  
+\f1\b Current Architecture
+\f0\b0 \
+\
+  Server (192.168.133.110):\
+  \uc0\u9500 \u9472 \u9472  Dashboard UI:  port 5173\
+  \uc0\u9500 \u9472 \u9472  API Server:    port 4000\
+  \uc0\u9500 \u9472 \u9472  MQTT Broker:   port 1883\
+  \uc0\u9492 \u9472 \u9472  Classification: port 3100 (internal only)\
+\
+  
+\f1\b Your New Network Topology (Goal)
+\f0\b0 \
+\
+  Internet\
+      \uc0\u9474 \
+      \uc0\u9660 \
+  \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+  \uc0\u9474   Comcast Gateway    \u9474   Public IP (dynamic or static?)\
+  \uc0\u9474   WAN: (public IP)   \u9474 \
+  \uc0\u9474   LAN: 10.0.0.1/24   \u9474 \
+  \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+      \uc0\u9474 \
+      \uc0\u9474  Ethernet (new connection)\
+      \uc0\u9660 \
+  \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+  \uc0\u9474   MikroTik Router    \u9474 \
+  \uc0\u9474   WAN: 10.0.0.x      \u9474   \u8592  Assign static IP from Comcast\
+  \uc0\u9474   LAN: 192.168.133.1 \u9474 \
+  \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+      \uc0\u9474 \
+      \uc0\u9660 \
+  \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+  \uc0\u9474   Server Mac Mini    \u9474   192.168.133.110\
+  \uc0\u9474   + Trap Devices     \u9474   192.168.133.x\
+  \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+\
+  ---\
+  
+\f1\b Task List
+\f0\b0 \
+\
+  
+\f1\b Phase 1: Physical Connection
+\f0\b0 \
+\
+  1. 
+\f1\b Connect Comcast to MikroTik
+\f0\b0  - Ethernet cable from Comcast LAN port to MikroTik WAN port\
+\
+  
+\f1\b Phase 2: MikroTik Configuration
+\f0\b0 \
+\
+  2. 
+\f1\b Set MikroTik WAN to static IP
+\f0\b0  on Comcast subnet (e.g., \cf4 10.0.0.100\cf3 )\
+  3. 
+\f1\b Verify MikroTik can reach internet
+\f0\b0  via Comcast gateway (\cf4 10.0.0.1\cf3 )\
+  4. 
+\f1\b Add port forwarding rules on MikroTik:
+\f0\b0 \
+\
+  | External Port | Internal Destination | Purpose              |\
+  |---------------|----------------------|----------------------|\
+  | 443           | 192.168.133.110:5173 | Dashboard UI (HTTPS) |\
+  | 4000          | 192.168.133.110:4000 | API Server           |\
+  | 1883          | 192.168.133.110:1883 | MQTT (optional*)     |\
+\
+  4. *MQTT only needed if you have devices connecting from outside your network\
+\
+  
+\f1\b Phase 3: Comcast Gateway Configuration
+\f0\b0 \
+\
+  5. 
+\f1\b Reserve static IP for MikroTik
+\f0\b0  - In Comcast admin, reserve \cf4 10.0.0.100\cf3  for MikroTik MAC\
+  6. 
+\f1\b Add port forwarding rules on Comcast:
+\f0\b0 \
+\
+  | External Port | Internal Destination | Purpose         |\
+  |---------------|----------------------|-----------------|\
+  | 443           | 10.0.0.100:443       | Dashboard UI    |\
+  | 4000          | 10.0.0.100:4000      | API Server      |\
+  | 1883          | 10.0.0.100:1883      | MQTT (optional) |\
+\
+\
+  
+\f1\b Phase 4: DNS Configuration
+\f0\b0 \
+\
+  7. 
+\f1\b Point your domain to Comcast public IP
+\f0\b0 \
+    - If Comcast IP is static: Add A record pointing to it\
+    - If dynamic: Set up DDNS (DuckDNS, No-IP, or Cloudflare API)\
+\
+  
+\f1\b Phase 5: HTTPS (Recommended)
+\f0\b0 \
+\
+  8. 
+\f1\b Set up SSL certificate
+\f0\b0  for your domain\
+    - Option A: Nginx reverse proxy with Let's Encrypt\
+    - Option B: Cloudflare proxy (free SSL, hides your IP)\
+\
+  
+\f1\b Phase 6: App Configuration
+\f0\b0 \
+\
+  9. 
+\f1\b Update mobile app API URL
+\f0\b0  to use your public domain\
+  10. 
+\f1\b Test from outside network
+\f0\b0  (use phone on cellular data)\
+\
+  ---\
+  
+\f1\b Questions to Clarify
+\f0\b0 \
+\
+  1. 
+\f1\b Do you have a static or dynamic IP from Comcast?
+\f0\b0  (affects DNS setup)\
+  2. 
+\f1\b What's your public domain name?
+\f0\b0  (for SSL certificate)\
+  3. 
+\f1\b Do you want HTTPS?
+\f0\b0  (recommended for security, required for iOS apps in production)\
+  4. 
+\f1\b Will Scout/Trap devices ever connect from outside your home network?
+\f0\b0  (determines if MQTT needs external access)\
+}
