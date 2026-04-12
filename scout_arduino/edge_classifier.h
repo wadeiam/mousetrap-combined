@@ -33,8 +33,11 @@
 
 #include <Chirale_TensorFlowLite.h>
 #include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
+#include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+
+// Forward declaration — defined in scout_arduino.ino
+extern void addSystemLog(const String& msg);
 
 // =============================================================================
 // Public types
@@ -76,8 +79,9 @@ struct EdgeClassificationResult {
 #define EDGE_HIGH_CONFIDENCE 0.90f
 // Anything below this is AMBIGUOUS → forward to server
 
-// Tensor arena size — sized for MobileNet v2 α=0.35 @ 96×96 int8
-#define EDGE_TENSOR_ARENA_SIZE (1024 * 1024)  // 1MB
+// Tensor arena size — MobileNet v2 α=0.35 @ 96×96 int8.
+// Sized at 3MB with plenty of headroom. We have 8MB PSRAM.
+#define EDGE_TENSOR_ARENA_SIZE (3 * 1024 * 1024)  // 3MB
 
 // Maximum model file size (we'll refuse anything bigger)
 #define EDGE_MAX_MODEL_SIZE (800 * 1024)       // 800KB
@@ -151,22 +155,23 @@ inline bool edgeClassifierInit() {
   s_initialized = true;
 
   Serial.println("[EdgeCls] Initializing edge classifier...");
+  addSystemLog("[EdgeCls] Init starting");
 
-  // Check for model file first — avoid allocating ~2MB of PSRAM buffers
-  // when there's no model to run (pre-training / fresh scout).
   if (!LittleFS.exists(EDGE_MODEL_PATH)) {
-    Serial.printf("[EdgeCls] No %s present — falling back to AMBIGUOUS verdicts\n",
-                  EDGE_MODEL_PATH);
+    Serial.printf("[EdgeCls] No %s present\n", EDGE_MODEL_PATH);
+    addSystemLog("[EdgeCls] No model.tflite in LittleFS");
     return false;
   }
 
   if (!allocateBuffers()) {
     Serial.println("[EdgeCls] Failed to allocate PSRAM buffers");
+    addSystemLog("[EdgeCls] PSRAM alloc failed");
     return false;
   }
 
   if (!loadModelFromLittleFS()) {
-    Serial.println("[EdgeCls] Model load failed — freeing buffers");
+    Serial.println("[EdgeCls] Model load failed");
+    addSystemLog("[EdgeCls] Model load failed");
     if (s_tensor_arena) { heap_caps_free(s_tensor_arena); s_tensor_arena = nullptr; }
     if (s_rgb_buffer) { heap_caps_free(s_rgb_buffer); s_rgb_buffer = nullptr; }
     return false;
@@ -174,12 +179,14 @@ inline bool edgeClassifierInit() {
 
   if (!setupInterpreter()) {
     Serial.println("[EdgeCls] Failed to set up TFLite interpreter");
+    addSystemLog("[EdgeCls] Interpreter setup failed");
     return false;
   }
 
   s_model_loaded = true;
   Serial.printf("[EdgeCls] Ready — model: %u bytes, arena: %u bytes\n",
                 (unsigned)s_model_size, (unsigned)EDGE_TENSOR_ARENA_SIZE);
+  addSystemLog(String("[EdgeCls] Ready: ") + (unsigned)s_model_size + " bytes");
   return true;
 }
 
@@ -259,6 +266,15 @@ inline EdgeClassificationResult edgeClassify(
                 edgeVerdictString(r.verdict), r.confidence,
                 r.rodent_score, r.person_or_pet_score, r.other_score,
                 (unsigned)r.inference_time_ms);
+
+  // Also push a compact log line to the system log so it's visible via HTTP
+  char buf[128];
+  snprintf(buf, sizeof(buf),
+           "[EdgeCls] bbox=(%u,%u,%ux%u) r=%.2f p=%.2f o=%.2f v=%s",
+           (unsigned)bbox_x, (unsigned)bbox_y, (unsigned)bbox_w, (unsigned)bbox_h,
+           r.rodent_score, r.person_or_pet_score, r.other_score,
+           edgeVerdictString(r.verdict));
+  addSystemLog(buf);
   return r;
 }
 
@@ -336,24 +352,15 @@ static bool setupInterpreter() {
   if (s_tflite_model->version() != TFLITE_SCHEMA_VERSION) {
     Serial.printf("[EdgeCls] Model schema v%d != library v%d\n",
                   (int)s_tflite_model->version(), (int)TFLITE_SCHEMA_VERSION);
+    addSystemLog(String("[EdgeCls] Schema mismatch v") + (int)s_tflite_model->version() +
+                 " vs lib v" + (int)TFLITE_SCHEMA_VERSION);
     return false;
   }
 
-  // Op resolver — only include the ops MobileNet v2 actually uses.
-  // This is much smaller than AllOpsResolver.
-  static tflite::MicroMutableOpResolver<12> resolver;
-  resolver.AddConv2D();
-  resolver.AddDepthwiseConv2D();
-  resolver.AddAdd();
-  resolver.AddAveragePool2D();
-  resolver.AddMaxPool2D();
-  resolver.AddRelu6();
-  resolver.AddHardSwish();
-  resolver.AddReshape();
-  resolver.AddFullyConnected();
-  resolver.AddSoftmax();
-  resolver.AddQuantize();
-  resolver.AddDequantize();
+  // AllOpsResolver — pulls in full TFLite Micro op set. Larger binary but
+  // avoids surprises from missing ops. Can switch to MicroMutableOpResolver
+  // once we know exactly which ops the model uses.
+  static tflite::AllOpsResolver resolver;
 
   static tflite::MicroInterpreter static_interpreter(
       s_tflite_model, resolver, s_tensor_arena, EDGE_TENSOR_ARENA_SIZE);
@@ -362,6 +369,7 @@ static bool setupInterpreter() {
   TfLiteStatus alloc_status = s_interpreter->AllocateTensors();
   if (alloc_status != kTfLiteOk) {
     Serial.println("[EdgeCls] AllocateTensors failed — tensor arena too small?");
+    addSystemLog("[EdgeCls] AllocateTensors failed");
     return false;
   }
 
@@ -376,11 +384,15 @@ static bool setupInterpreter() {
     Serial.printf("[EdgeCls] Unexpected input shape: [%d,%d,%d,%d]\n",
                   s_input->dims->data[0], s_input->dims->data[1],
                   s_input->dims->data[2], s_input->dims->data[3]);
+    addSystemLog(String("[EdgeCls] Bad input shape: [") +
+                 s_input->dims->data[0] + "," + s_input->dims->data[1] + "," +
+                 s_input->dims->data[2] + "," + s_input->dims->data[3] + "]");
     return false;
   }
 
   if (s_input->type != kTfLiteInt8) {
     Serial.println("[EdgeCls] Input must be int8");
+    addSystemLog(String("[EdgeCls] Input not int8, type=") + (int)s_input->type);
     return false;
   }
 
@@ -393,6 +405,12 @@ static bool setupInterpreter() {
   Serial.printf("[EdgeCls] input scale=%.4f zp=%d  output scale=%.4f zp=%d\n",
                 s_input_scale, (int)s_input_zero_point,
                 s_output_scale, (int)s_output_zero_point);
+  char qbuf[128];
+  snprintf(qbuf, sizeof(qbuf),
+           "[EdgeCls] quant in scale=%.6f zp=%d out scale=%.6f zp=%d",
+           s_input_scale, (int)s_input_zero_point,
+           s_output_scale, (int)s_output_zero_point);
+  addSystemLog(qbuf);
   return true;
 }
 
@@ -446,9 +464,12 @@ static bool prepareInputTensor(camera_fb_t* frame,
   }
 
   // Simple nearest-neighbor resize from crop region to 96×96 with int8
-  // quantization inline. MobileNet v2 preprocess is (x/127.5 - 1.0) which
-  // maps [0,255] to [-1,1]. With int8 quant, input_scale ≈ 1/127.5 and
-  // input_zero_point ≈ 0, so int8_val = (float_val - zp) / scale.
+  // quantization inline. The model was converted with preprocess_input
+  // INSIDE the graph (baked into the float32 subgraph), so we feed RAW
+  // pixel values [0,255] and let the model do its own /127.5-1 scaling.
+  // Quantization: int8 = round(raw_pixel / scale) + zero_point
+  // For MobileNet v2 our converter gives scale=1.0, zp=-128, so this
+  // simplifies to: int8 = raw_pixel - 128.
   int8_t* input_data = s_input->data.int8;
 
   for (int y = 0; y < EDGE_INPUT_SIZE; y++) {
@@ -457,10 +478,9 @@ static bool prepareInputTensor(camera_fb_t* frame,
       int src_x = cx + (x * cw) / EDGE_INPUT_SIZE;
       const uint8_t* src = &s_rgb_buffer[(src_y * fw + src_x) * 3];
 
-      // MobileNet v2 preprocess: (pixel / 127.5) - 1.0
       for (int c = 0; c < 3; c++) {
-        float v = ((float)src[c] / 127.5f) - 1.0f;
-        int q = (int)lroundf(v / s_input_scale) + s_input_zero_point;
+        // Quantize raw [0,255] pixel value using the model's scale/zp
+        int q = (int)lroundf((float)src[c] / s_input_scale) + s_input_zero_point;
         if (q < -128) q = -128;
         if (q > 127) q = 127;
         input_data[(y * EDGE_INPUT_SIZE + x) * 3 + c] = (int8_t)q;
