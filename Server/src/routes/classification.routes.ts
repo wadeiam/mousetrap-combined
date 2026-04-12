@@ -29,7 +29,7 @@ router.use((req: AuthRequest, _res: Response, next) => {
 // /debug, /live, and /stats are unauthenticated (monitoring dashboards).
 // All other routes require authentication.
 router.use((req: AuthRequest, _res: Response, next) => {
-  const openPaths = ['/debug', '/debug-test', '/live', '/stats'];
+  const openPaths = ['/debug', '/debug-test', '/live', '/stats', '/ml-performance'];
   if (openPaths.some(p => req.path === p)) {
     return next();
   }
@@ -729,108 +729,279 @@ router.get('/debug-test', async (_req: AuthRequest, res: Response) => {
 
 /**
  * GET /api/classification/debug
- * Simple HTML debug page for viewing classification activity
+ * ML Pipeline Performance Dashboard
+ * Shows per-device scout + server metrics, signal quality, insights
  */
 router.get('/debug', async (req: AuthRequest, res: Response) => {
   const html = `
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ML Classification Monitor</title>
+  <title>ML Pipeline Dashboard</title>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-    h1 { color: #00d4ff; margin-bottom: 20px; }
-    .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
-    .stat-card { background: #16213e; padding: 15px 25px; border-radius: 10px; min-width: 150px; }
-    .stat-card h3 { color: #888; font-size: 12px; text-transform: uppercase; }
-    .stat-card .value { font-size: 28px; font-weight: bold; color: #00d4ff; }
-    .stat-card.rodent .value { color: #ff6b6b; }
+    h1 { color: #00d4ff; margin-bottom: 5px; }
+    h2 { color: #aaa; font-size: 14px; margin-bottom: 20px; font-weight: normal; }
+    h3 { color: #00d4ff; margin: 25px 0 10px; font-size: 16px; }
+    .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .stat-card { background: #16213e; padding: 12px 20px; border-radius: 8px; min-width: 120px; }
+    .stat-card h4 { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-card .value { font-size: 24px; font-weight: bold; color: #00d4ff; }
+    .stat-card.warn .value { color: #ffd93d; }
+    .stat-card.danger .value { color: #ff6b6b; }
+    .stat-card.good .value { color: #6bcb77; }
     .controls { margin-bottom: 20px; display: flex; gap: 10px; align-items: center; }
-    button { background: #00d4ff; color: #000; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; }
+    button { background: #00d4ff; color: #000; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 13px; }
     button:hover { background: #00a8cc; }
-    button.danger { background: #ff6b6b; }
-    button.danger:hover { background: #ee5a5a; }
-    select, input { background: #16213e; color: #eee; border: 1px solid #333; padding: 10px; border-radius: 5px; }
-    table { width: 100%; border-collapse: collapse; background: #16213e; border-radius: 10px; overflow: hidden; }
-    th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #333; }
-    th { background: #0f3460; color: #00d4ff; font-weight: 600; }
+    select { background: #16213e; color: #eee; border: 1px solid #333; padding: 8px; border-radius: 5px; }
+    table { width: 100%; border-collapse: collapse; background: #16213e; border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #222; font-size: 13px; }
+    th { background: #0f3460; color: #00d4ff; font-weight: 600; font-size: 11px; text-transform: uppercase; }
     tr:hover { background: #1f4068; }
-    .class-rodent { color: #ff6b6b; font-weight: bold; }
-    .class-other { color: #888; }
-    .class-pet { color: #ffd93d; }
-    .class-person { color: #6bcb77; }
-    .confidence-high { color: #6bcb77; }
-    .confidence-med { color: #ffd93d; }
-    .confidence-low { color: #ff6b6b; }
-    .refresh-indicator { color: #666; font-size: 12px; }
-    .time-ago { color: #888; font-size: 12px; }
+    .bar { height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; }
+    .bar-rodent { background: #ff6b6b; }
+    .bar-pet { background: #ffd93d; }
+    .bar-person { background: #6bcb77; }
+    .bar-bird { background: #4ecdc4; }
+    .bar-other { background: #444; }
+    .insight { background: #1e2a4a; border-left: 3px solid #ffd93d; padding: 10px 15px; margin: 5px 0; border-radius: 0 5px 5px 0; font-size: 13px; }
+    .insight.good { border-color: #6bcb77; }
+    .tab-bar { display: flex; gap: 2px; margin-bottom: 15px; }
+    .tab { padding: 8px 20px; background: #16213e; cursor: pointer; border-radius: 5px 5px 0 0; font-size: 13px; }
+    .tab.active { background: #0f3460; color: #00d4ff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .muted { color: #666; }
+    .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .pill-good { background: #1a3a2a; color: #6bcb77; }
+    .pill-warn { background: #3a3a1a; color: #ffd93d; }
+    .pill-bad { background: #3a1a1a; color: #ff6b6b; }
+    .refresh-indicator { color: #444; font-size: 11px; }
+    #loading { text-align: center; padding: 60px; color: #666; }
   </style>
 </head>
 <body>
-  <h1>🔬 ML Classification Monitor</h1>
-
-  <div class="stats" id="stats">
-    <div class="stat-card"><h3>Total Events</h3><div class="value" id="stat-total">-</div></div>
-    <div class="stat-card rodent"><h3>Rodents</h3><div class="value" id="stat-rodent">-</div></div>
-    <div class="stat-card"><h3>Avg Confidence</h3><div class="value" id="stat-confidence">-</div></div>
-    <div class="stat-card"><h3>Time Range</h3><div class="value" id="stat-range">-</div></div>
-  </div>
+  <h1>ML Pipeline Dashboard</h1>
+  <h2 id="subtitle">Loading...</h2>
 
   <div class="controls">
-    <label>Time Range: </label>
-    <select id="minutes" onchange="refresh()">
-      <option value="5">Last 5 min</option>
-      <option value="15">Last 15 min</option>
-      <option value="30">Last 30 min</option>
-      <option value="60" selected>Last 1 hour</option>
-      <option value="180">Last 3 hours</option>
-      <option value="720">Last 12 hours</option>
-      <option value="1440">Last 24 hours</option>
+    <select id="hours" onchange="load()">
+      <option value="1">Last 1 hour</option>
+      <option value="6">Last 6 hours</option>
+      <option value="24" selected>Last 24 hours</option>
+      <option value="72">Last 3 days</option>
+      <option value="168">Last 7 days</option>
     </select>
-    <button onclick="refresh()">🔄 Refresh</button>
-    <button class="danger" onclick="deleteFalsePositives()">🗑️ Delete Non-Rodents</button>
-    <span class="refresh-indicator" id="lastRefresh">Auto-refresh: 10s</span>
+    <button onclick="load()">Refresh</button>
+    <span class="refresh-indicator" id="lastRefresh"></span>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Time</th>
-        <th>Device</th>
-        <th>Classification</th>
-        <th>Confidence</th>
-        <th>Top Match</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody id="tableBody">
-      <tr><td colspan="6" style="text-align:center; padding:40px;">Loading...</td></tr>
-    </tbody>
-  </table>
+  <!-- System summary -->
+  <div class="stats" id="systemStats"></div>
+
+  <!-- Tabs -->
+  <div class="tab-bar">
+    <div class="tab active" onclick="switchTab('devices')">Per-Device</div>
+    <div class="tab" onclick="switchTab('hourly')">Hourly Rates</div>
+    <div class="tab" onclick="switchTab('corrections')">Corrections</div>
+    <div class="tab" onclick="switchTab('recent')">Recent Events</div>
+  </div>
+
+  <div id="tab-devices" class="tab-content active"></div>
+  <div id="tab-hourly" class="tab-content"></div>
+  <div id="tab-corrections" class="tab-content"></div>
+  <div id="tab-recent" class="tab-content"></div>
+
+  <!-- Insights -->
+  <h3>Insights</h3>
+  <div id="insights"></div>
 
   <script>
-    let autoRefreshInterval;
-
-    function getClassColor(cls) {
-      if (['rodent', 'mouse', 'rat'].includes(cls)) return 'class-rodent';
-      if (['pet', 'cat', 'dog'].includes(cls)) return 'class-pet';
-      if (['person', 'human'].includes(cls)) return 'class-person';
-      return 'class-other';
+    function switchTab(name) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+      document.getElementById('tab-' + name).classList.add('active');
+      event.target.classList.add('active');
     }
 
-    function getConfidenceColor(conf) {
-      if (conf >= 0.7) return 'confidence-high';
-      if (conf >= 0.4) return 'confidence-med';
-      return 'confidence-low';
+    function pct(n, total) { return total > 0 ? (n / total * 100).toFixed(0) : '0'; }
+
+    function classBar(breakdown, total) {
+      if (total === 0) return '<span class="muted">no data</span>';
+      const items = [
+        { key: 'rodent', cls: 'bar-rodent' },
+        { key: 'pet', cls: 'bar-pet' },
+        { key: 'person', cls: 'bar-person' },
+        { key: 'bird', cls: 'bar-bird' },
+        { key: 'other', cls: 'bar-other' },
+      ];
+      return items.map(i => {
+        const w = Math.max(0, (breakdown[i.key] || 0) / total * 100);
+        return w > 0 ? '<span class="bar ' + i.cls + '" style="width:' + w + '%" title="' + i.key + ': ' + breakdown[i.key] + '"></span>' : '';
+      }).join('') + ' <span class="muted mono">' + total + '</span>';
+    }
+
+    function signalPill(sq) {
+      if (sq.assessment === 'good') return '<span class="pill pill-good">' + sq.usefulRate + '% useful</span>';
+      if (sq.assessment === 'noisy') return '<span class="pill pill-warn">' + sq.usefulRate + '% useful</span>';
+      return '<span class="pill pill-bad">' + sq.usefulRate + '% useful</span>';
+    }
+
+    async function load() {
+      const hours = document.getElementById('hours').value;
+
+      // Load ML performance
+      try {
+        const res = await fetch('/api/classification/ml-performance?hours=' + hours);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error);
+        renderSystem(data.system, hours);
+        renderDevices(data.devices);
+        renderHourly(data.hourlyRates);
+        renderCorrections(data.corrections);
+        renderInsights(data.insights);
+        document.getElementById('subtitle').textContent =
+          data.system.totalClassifications + ' classifications from ' +
+          data.system.activeDevices + ' device(s) in last ' + hours + 'h';
+      } catch (err) {
+        document.getElementById('subtitle').textContent = 'Error: ' + err.message;
+      }
+
+      // Load recent events
+      try {
+        const mins = Math.min(parseInt(hours) * 60, 1440);
+        const res2 = await fetch('/api/classification/live?minutes=' + mins + '&limit=50');
+        const live = await res2.json();
+        if (live.success) renderRecent(live.classifications);
+      } catch (e) {}
+
+      document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    }
+
+    function renderSystem(sys, hours) {
+      const el = document.getElementById('systemStats');
+      el.innerHTML = [
+        card('Total', sys.totalClassifications, sys.totalClassifications > 100 ? 'warn' : ''),
+        card('Rodent', sys.breakdown.rodent, sys.breakdown.rodent > 0 ? 'danger' : 'good'),
+        card('Person', sys.breakdown.person, ''),
+        card('Pet', sys.breakdown.pet, ''),
+        card('Other', sys.breakdown.other, sys.breakdown.other > sys.totalClassifications * 0.8 ? 'warn' : ''),
+        card('Avg Conf', (sys.avgConfidence * 100).toFixed(0) + '%', sys.avgConfidence < 0.4 ? 'warn' : 'good'),
+        card('Avg Inference', (sys.avgInferenceMs || 0) + 'ms', ''),
+        card('Low Conf', sys.totalLowConfidence, sys.totalLowConfidence > 5 ? 'warn' : ''),
+        card('Corrections', sys.totalCorrections, sys.totalCorrections > 0 ? 'warn' : ''),
+        card('Storage', sys.storageMB + ' MB', ''),
+      ].join('');
+    }
+
+    function card(label, value, cls) {
+      return '<div class="stat-card ' + cls + '"><h4>' + label + '</h4><div class="value">' + value + '</div></div>';
+    }
+
+    function renderDevices(devices) {
+      if (devices.length === 0) {
+        document.getElementById('tab-devices').innerHTML = '<p class="muted" style="padding:30px">No device data</p>';
+        return;
+      }
+      let html = '<table><thead><tr>';
+      html += '<th>Device</th><th>Images</th><th>Img/hr</th><th>Classification Breakdown</th>';
+      html += '<th>Signal</th><th>Confidence</th><th>Edge PF</th><th>Model</th>';
+      html += '</tr></thead><tbody>';
+      for (const d of devices) {
+        html += '<tr>';
+        html += '<td><strong>' + (d.deviceName || '?') + '</strong><br><span class="muted mono">' + (d.macAddress || '') + '</span></td>';
+        html += '<td>' + d.server.totalClassified + '</td>';
+        html += '<td>' + d.server.imagesPerHour + '</td>';
+        html += '<td style="min-width:200px">' + classBar(d.server.breakdown, d.server.totalClassified) + '</td>';
+        html += '<td>' + signalPill(d.signalQuality) + '</td>';
+        html += '<td class="mono">' + (d.server.confidence.avg * 100).toFixed(0) + '%'
+              + (d.server.confidence.lowCount > 0 ? ' <span class="pill pill-warn">' + d.server.confidence.lowCount + ' low</span>' : '')
+              + '</td>';
+        html += '<td class="mono">' + (d.edge.totalInferences > 0
+              ? d.edge.worthSending + ' sent / ' + d.edge.totalInferences + ' total'
+              : '<span class="muted">none</span>') + '</td>';
+        html += '<td class="mono muted">' + (d.server.modelVersions.join(', ') || '-') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      document.getElementById('tab-devices').innerHTML = html;
+    }
+
+    function renderHourly(rates) {
+      if (rates.length === 0) {
+        document.getElementById('tab-hourly').innerHTML = '<p class="muted" style="padding:30px">No hourly data</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Hour</th><th>Device</th><th>Images</th><th>Rodents</th><th>Rate</th></tr></thead><tbody>';
+      for (const r of rates) {
+        const d = new Date(r.hour);
+        html += '<tr><td class="mono">' + d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '</td>';
+        html += '<td>' + r.deviceName + '</td>';
+        html += '<td>' + r.count + '</td>';
+        html += '<td' + (r.rodentCount > 0 ? ' style="color:#ff6b6b;font-weight:bold"' : '') + '>' + r.rodentCount + '</td>';
+        const barW = Math.min(100, r.count * 5);
+        html += '<td><span class="bar bar-other" style="width:' + barW + 'px"></span></td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      document.getElementById('tab-hourly').innerHTML = html;
+    }
+
+    function renderCorrections(corr) {
+      if (corr.total === 0) {
+        document.getElementById('tab-corrections').innerHTML = '<p class="muted" style="padding:30px">No corrections yet. Use the /api/classification/:id/correct endpoint to submit corrections.</p>';
+        return;
+      }
+      let html = '<p style="margin-bottom:10px">' + corr.total + ' total corrections (these reveal where the model is wrong)</p>';
+      html += '<table><thead><tr><th>Model Predicted</th><th>User Corrected To</th><th>Count</th></tr></thead><tbody>';
+      for (const m of corr.matrix) {
+        html += '<tr><td>' + m.predicted + '</td><td><strong>' + m.actual + '</strong></td><td>' + m.count + '</td></tr>';
+      }
+      html += '</tbody></table>';
+      document.getElementById('tab-corrections').innerHTML = html;
+    }
+
+    function renderRecent(classifications) {
+      if (!classifications || classifications.length === 0) {
+        document.getElementById('tab-recent').innerHTML = '<p class="muted" style="padding:30px">No recent events</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>Time</th><th>Device</th><th>Class</th><th>Conf</th><th>Top Match</th><th>Edge</th><th>Model</th></tr></thead><tbody>';
+      for (const c of classifications) {
+        const clsColor = ['rodent','mouse','rat'].includes(c.classification) ? '#ff6b6b'
+          : ['pet','cat','dog'].includes(c.classification) ? '#ffd93d'
+          : c.classification === 'person' ? '#6bcb77' : '#888';
+        const confColor = c.confidence >= 0.7 ? '#6bcb77' : c.confidence >= 0.4 ? '#ffd93d' : '#ff6b6b';
+        const ago = timeAgo(c.classifiedAt);
+        html += '<tr>';
+        html += '<td class="mono">' + ago + '</td>';
+        html += '<td>' + (c.deviceName || '-') + '</td>';
+        html += '<td style="color:' + clsColor + ';font-weight:bold">' + c.classification.toUpperCase() + '</td>';
+        html += '<td style="color:' + confColor + '" class="mono">' + c.confidencePercent + '</td>';
+        html += '<td class="mono">' + (c.topMatch || '-') + '</td>';
+        html += '<td class="mono muted">' + (c.edgeVerdict || '-') + '</td>';
+        html += '<td class="mono muted">' + (c.modelVersion || '-') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      document.getElementById('tab-recent').innerHTML = html;
+    }
+
+    function renderInsights(insights) {
+      const el = document.getElementById('insights');
+      if (!insights || insights.length === 0) {
+        el.innerHTML = '<div class="insight good">Pipeline looks healthy — no issues detected.</div>';
+        return;
+      }
+      el.innerHTML = insights.map(i => '<div class="insight">' + i + '</div>').join('');
     }
 
     function timeAgo(dateStr) {
-      const now = new Date();
-      const date = new Date(dateStr);
-      const seconds = Math.floor((now - date) / 1000);
+      const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
       if (seconds < 60) return seconds + 's ago';
       const minutes = Math.floor(seconds / 60);
       if (minutes < 60) return minutes + 'm ago';
@@ -838,67 +1009,8 @@ router.get('/debug', async (req: AuthRequest, res: Response) => {
       return hours + 'h ' + (minutes % 60) + 'm ago';
     }
 
-    async function refresh() {
-      const minutes = document.getElementById('minutes').value;
-      try {
-        const res = await fetch('/api/classification/live?minutes=' + minutes + '&limit=100');
-        const data = await res.json();
-
-        if (data.success) {
-          document.getElementById('stat-total').textContent = data.stats.total;
-          document.getElementById('stat-rodent').textContent = data.stats.rodentCount;
-          document.getElementById('stat-confidence').textContent = (data.stats.avgConfidence * 100).toFixed(0) + '%';
-          document.getElementById('stat-range').textContent = data.timeRange;
-
-          const tbody = document.getElementById('tableBody');
-          if (data.classifications.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:40px; color:#666;">No classifications in this time range</td></tr>';
-          } else {
-            tbody.innerHTML = data.classifications.map(c => \`
-              <tr>
-                <td><span class="time-ago">\${timeAgo(c.classifiedAt)}</span><br><small>\${new Date(c.classifiedAt).toLocaleTimeString()}</small></td>
-                <td>\${c.deviceName}<br><small style="color:#666">\${c.macAddress}</small></td>
-                <td class="\${getClassColor(c.classification)}">\${c.classification.toUpperCase()}</td>
-                <td class="\${getConfidenceColor(c.confidence)}">\${c.confidencePercent}</td>
-                <td style="max-width:200px; overflow:hidden; text-overflow:ellipsis">\${c.topMatch || '-'}</td>
-                <td><button onclick="deleteOne('\${c.id}')" style="padding:5px 10px; font-size:12px;">Delete</button></td>
-              </tr>
-            \`).join('');
-          }
-
-          document.getElementById('lastRefresh').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-        }
-      } catch (err) {
-        console.error('Refresh failed:', err);
-        document.getElementById('tableBody').innerHTML = '<tr><td colspan="6" style="text-align:center; padding:40px; color:#ff6b6b;">Fetch error: ' + err.message + '</td></tr>';
-      }
-    }
-
-    async function deleteOne(id) {
-      if (!confirm('Delete this classification?')) return;
-      try {
-        await fetch('/api/classification/' + id, { method: 'DELETE' });
-        refresh();
-      } catch (err) {
-        alert('Delete failed');
-      }
-    }
-
-    async function deleteFalsePositives() {
-      if (!confirm('Delete ALL non-rodent classifications? This cannot be undone.')) return;
-      try {
-        const res = await fetch('/api/classification/bulk/false-positives', { method: 'DELETE' });
-        const data = await res.json();
-        alert('Deleted ' + data.deleted + ' classification(s)');
-        refresh();
-      } catch (err) {
-        alert('Delete failed');
-      }
-    }
-
-    // Initial load and auto-refresh
-    refresh();
-    autoRefreshInterval = setInterval(refresh, 10000);
+    load();
+    setInterval(load, 30000);
   </script>
 </body>
 </html>
@@ -1053,5 +1165,284 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     res.status(500).json({ error: 'Failed to delete classification' });
   }
 });
+
+/**
+ * GET /api/classification/ml-performance
+ * Comprehensive ML pipeline performance metrics.
+ * Shows per-device scout pre-filter stats and server YOLO classification stats.
+ *
+ * Query params:
+ *   - hours: time window (default 24)
+ */
+router.get('/ml-performance', async (req: AuthRequest, res: Response) => {
+  try {
+    const hours = parseInt(req.query.hours as string) || 24;
+    const interval = `${hours} hours`;
+
+    // ── Per-device metrics ──────────────────────────────────────────────
+    const perDevice = await dbPool.query(`
+      SELECT
+        d.id                                          AS device_id,
+        d.name                                        AS device_name,
+        d.mac_address,
+        d.device_type,
+        COUNT(*)                                      AS total_classifications,
+        -- Server classification breakdown
+        COUNT(*) FILTER (WHERE ic.classification IN ('rodent','mouse','rat'))  AS rodent_count,
+        COUNT(*) FILTER (WHERE ic.classification IN ('pet','cat','dog'))       AS pet_count,
+        COUNT(*) FILTER (WHERE ic.classification = 'person')                  AS person_count,
+        COUNT(*) FILTER (WHERE ic.classification = 'bird')                    AS bird_count,
+        COUNT(*) FILTER (WHERE ic.classification IN ('other','empty'))        AS other_count,
+        -- Confidence stats
+        ROUND(AVG(ic.confidence)::numeric, 3)                                 AS avg_confidence,
+        ROUND(MIN(ic.confidence)::numeric, 3)                                 AS min_confidence,
+        ROUND(MAX(ic.confidence)::numeric, 3)                                 AS max_confidence,
+        -- Low-confidence count (uncertain classifications worth reviewing)
+        COUNT(*) FILTER (WHERE ic.confidence < 0.4)                           AS low_confidence_count,
+        -- Edge pre-filter stats (what the scout decided before sending)
+        COUNT(*) FILTER (WHERE ic.edge_verdict IS NOT NULL)                   AS edge_total,
+        COUNT(*) FILTER (WHERE ic.edge_verdict = 'worth_sending')             AS edge_worth_sending,
+        COUNT(*) FILTER (WHERE ic.edge_verdict = 'ambiguous')                 AS edge_ambiguous,
+        COUNT(*) FILTER (WHERE ic.edge_verdict = 'unknown')                   AS edge_unknown,
+        ROUND(AVG(ic.edge_confidence)::numeric, 3)                            AS edge_avg_confidence,
+        -- Model versions seen
+        ARRAY_AGG(DISTINCT ic.model_version) FILTER (WHERE ic.model_version IS NOT NULL) AS model_versions,
+        -- Timing
+        ROUND(AVG(ic.inference_time_ms)::numeric, 0)  AS avg_inference_ms,
+        MIN(ic.classified_at)                          AS first_event,
+        MAX(ic.classified_at)                          AS last_event,
+        -- User corrections
+        COUNT(*) FILTER (WHERE ic.user_corrected_class IS NOT NULL)           AS corrections_count,
+        -- Detections with bboxes
+        COUNT(*) FILTER (WHERE ic.detections IS NOT NULL AND ic.detections != 'null'::jsonb) AS has_detections,
+        -- Storage
+        COALESCE(SUM(ic.image_size_bytes), 0)          AS total_image_bytes
+      FROM image_classifications ic
+      JOIN devices d ON ic.device_id = d.id
+      WHERE ic.classified_at > NOW() - INTERVAL '${interval}'
+      GROUP BY d.id, d.name, d.mac_address, d.device_type
+      ORDER BY total_classifications DESC
+    `);
+
+    // ── Hourly rate (for trending) ──────────────────────────────────────
+    const hourlyRate = await dbPool.query(`
+      SELECT
+        d.id AS device_id,
+        d.name AS device_name,
+        DATE_TRUNC('hour', ic.classified_at) AS hour,
+        COUNT(*) AS count,
+        COUNT(*) FILTER (WHERE ic.classification IN ('rodent','mouse','rat')) AS rodent_count
+      FROM image_classifications ic
+      JOIN devices d ON ic.device_id = d.id
+      WHERE ic.classified_at > NOW() - INTERVAL '${interval}'
+      GROUP BY d.id, d.name, DATE_TRUNC('hour', ic.classified_at)
+      ORDER BY hour DESC
+    `);
+
+    // ── System-wide summary ─────────────────────────────────────────────
+    const systemWide = await dbPool.query(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(DISTINCT ic.device_id) AS active_devices,
+        COUNT(*) FILTER (WHERE ic.classification IN ('rodent','mouse','rat'))  AS total_rodent,
+        COUNT(*) FILTER (WHERE ic.classification IN ('pet','cat','dog'))       AS total_pet,
+        COUNT(*) FILTER (WHERE ic.classification = 'person')                  AS total_person,
+        COUNT(*) FILTER (WHERE ic.classification = 'bird')                    AS total_bird,
+        COUNT(*) FILTER (WHERE ic.classification IN ('other','empty'))        AS total_other,
+        ROUND(AVG(ic.confidence)::numeric, 3) AS avg_confidence,
+        ROUND(AVG(ic.inference_time_ms)::numeric, 0) AS avg_inference_ms,
+        COUNT(*) FILTER (WHERE ic.user_corrected_class IS NOT NULL) AS total_corrections,
+        COUNT(*) FILTER (WHERE ic.confidence < 0.4) AS total_low_confidence,
+        COALESCE(SUM(ic.image_size_bytes), 0) AS total_storage_bytes,
+        ARRAY_AGG(DISTINCT ic.model_version) FILTER (WHERE ic.model_version IS NOT NULL) AS model_versions
+      FROM image_classifications ic
+      WHERE ic.classified_at > NOW() - INTERVAL '${interval}'
+    `);
+
+    // ── Confusion: corrections reveal misclassifications ────────────────
+    const confusionMatrix = await dbPool.query(`
+      SELECT
+        ic.classification AS predicted,
+        ic.user_corrected_class AS actual,
+        COUNT(*) AS count
+      FROM image_classifications ic
+      WHERE ic.user_corrected_class IS NOT NULL
+        AND ic.classified_at > NOW() - INTERVAL '${interval}'
+      GROUP BY ic.classification, ic.user_corrected_class
+      ORDER BY count DESC
+    `);
+
+    // ── Useful signal rate per device (for tuning insight) ──────────────
+    // "useful" = rodent, pet, person, bird (anything that's not noise)
+    const devices = perDevice.rows.map((d: any) => {
+      const total = parseInt(d.total_classifications);
+      const useful = parseInt(d.rodent_count) + parseInt(d.pet_count) +
+                     parseInt(d.person_count) + parseInt(d.bird_count);
+      const junk = parseInt(d.other_count);
+      const usefulRate = total > 0 ? useful / total : 0;
+      const imagesPerHour = total > 0 && d.first_event && d.last_event
+        ? total / Math.max(1, (new Date(d.last_event).getTime() - new Date(d.first_event).getTime()) / 3600000)
+        : 0;
+
+      return {
+        deviceId: d.device_id,
+        deviceName: d.device_name,
+        macAddress: d.mac_address,
+        deviceType: d.device_type,
+        // Server classification results
+        server: {
+          totalClassified: total,
+          imagesPerHour: Math.round(imagesPerHour * 10) / 10,
+          breakdown: {
+            rodent: parseInt(d.rodent_count),
+            pet: parseInt(d.pet_count),
+            person: parseInt(d.person_count),
+            bird: parseInt(d.bird_count),
+            other: parseInt(d.other_count),
+          },
+          confidence: {
+            avg: parseFloat(d.avg_confidence),
+            min: parseFloat(d.min_confidence),
+            max: parseFloat(d.max_confidence),
+            lowCount: parseInt(d.low_confidence_count),
+          },
+          avgInferenceMs: parseInt(d.avg_inference_ms) || null,
+          modelVersions: d.model_versions || [],
+          hasDetections: parseInt(d.has_detections),
+          corrections: parseInt(d.corrections_count),
+        },
+        // Scout edge pre-filter (what scout decided before sending)
+        edge: {
+          totalInferences: parseInt(d.edge_total),
+          worthSending: parseInt(d.edge_worth_sending),
+          ambiguous: parseInt(d.edge_ambiguous),
+          unknown: parseInt(d.edge_unknown),
+          avgConfidence: parseFloat(d.edge_avg_confidence) || null,
+          // Note: false_trigger events never reach the server, so we can't count them here.
+          // The "dropped" count is invisible to the server — only the scout knows.
+          note: 'false_trigger frames are dropped by scout and never reach server',
+        },
+        // Signal quality
+        signalQuality: {
+          usefulRate: Math.round(usefulRate * 100),
+          junkRate: Math.round((1 - usefulRate) * 100),
+          useful,
+          junk,
+          assessment: usefulRate >= 0.5 ? 'good' : usefulRate >= 0.2 ? 'noisy' : 'very_noisy',
+        },
+        // Storage
+        storageMB: Math.round(parseInt(d.total_image_bytes) / 1024 / 1024 * 10) / 10,
+        firstEvent: d.first_event,
+        lastEvent: d.last_event,
+      };
+    });
+
+    const sys = systemWide.rows[0] || {};
+    const totalCount = parseInt(sys.total) || 0;
+
+    res.json({
+      success: true,
+      timeWindow: `${hours}h`,
+      generatedAt: new Date().toISOString(),
+
+      // System-wide summary
+      system: {
+        totalClassifications: totalCount,
+        activeDevices: parseInt(sys.active_devices) || 0,
+        breakdown: {
+          rodent: parseInt(sys.total_rodent) || 0,
+          pet: parseInt(sys.total_pet) || 0,
+          person: parseInt(sys.total_person) || 0,
+          bird: parseInt(sys.total_bird) || 0,
+          other: parseInt(sys.total_other) || 0,
+        },
+        avgConfidence: parseFloat(sys.avg_confidence) || 0,
+        avgInferenceMs: parseInt(sys.avg_inference_ms) || 0,
+        totalCorrections: parseInt(sys.total_corrections) || 0,
+        totalLowConfidence: parseInt(sys.total_low_confidence) || 0,
+        storageMB: Math.round((parseInt(sys.total_storage_bytes) || 0) / 1024 / 1024 * 10) / 10,
+        modelVersions: sys.model_versions || [],
+      },
+
+      // Per-device breakdown
+      devices,
+
+      // Hourly send rates (for graphing)
+      hourlyRates: hourlyRate.rows.map((r: any) => ({
+        deviceId: r.device_id,
+        deviceName: r.device_name,
+        hour: r.hour,
+        count: parseInt(r.count),
+        rodentCount: parseInt(r.rodent_count),
+      })),
+
+      // Confusion matrix from user corrections (model errors)
+      corrections: {
+        total: parseInt(sys.total_corrections) || 0,
+        matrix: confusionMatrix.rows.map((r: any) => ({
+          predicted: r.predicted,
+          actual: r.actual,
+          count: parseInt(r.count),
+        })),
+      },
+
+      // Actionable insights
+      insights: generateInsights(devices, totalCount),
+    });
+  } catch (error: any) {
+    logger.error('Failed to get ML performance metrics', { error: error.message });
+    res.status(500).json({ error: 'Failed to get ML performance metrics' });
+  }
+});
+
+function generateInsights(devices: any[], totalCount: number): string[] {
+  const insights: string[] = [];
+
+  if (totalCount === 0) {
+    insights.push('No classifications in this time window.');
+    return insights;
+  }
+
+  for (const d of devices) {
+    const name = d.deviceName || d.macAddress;
+
+    // High junk rate
+    if (d.signalQuality.junkRate > 80 && d.server.totalClassified > 10) {
+      insights.push(
+        `${name}: ${d.signalQuality.junkRate}% junk — pre-filter threshold should be raised`
+      );
+    }
+
+    // High send rate
+    if (d.server.imagesPerHour > 10) {
+      insights.push(
+        `${name}: sending ${d.server.imagesPerHour} images/hour — consider motion sensitivity tuning`
+      );
+    }
+
+    // Many low-confidence results
+    if (d.server.confidence.lowCount > 5) {
+      insights.push(
+        `${name}: ${d.server.confidence.lowCount} low-confidence (<40%) classifications — model may need retraining on this environment`
+      );
+    }
+
+    // No edge pre-filter running
+    if (d.server.totalClassified > 10 && d.edge.totalInferences === 0) {
+      insights.push(
+        `${name}: no edge pre-filter data — binary model not deployed on this scout`
+      );
+    }
+
+    // Corrections suggest systematic errors
+    if (d.server.corrections > 3) {
+      insights.push(
+        `${name}: ${d.server.corrections} user corrections — review confusion matrix for systematic misclassifications`
+      );
+    }
+  }
+
+  return insights;
+}
 
 export default router;
