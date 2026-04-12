@@ -529,11 +529,12 @@ try {
 }
 
 try {
-  const diagnosticsRoutes = require('./routes/diagnostics.routes');
-  app.use('/api', diagnosticsRoutes.default || diagnosticsRoutes);
-  console.log('✓ Diagnostics routes loaded');
+  const classificationRoutes = require('./routes/classification.routes');
+  app.use('/api/classification', classificationRoutes.default || classificationRoutes);
+  console.log('✓ Classification routes loaded (AI rodent detection)');
+  logger.info('Classification API routes initialized');
 } catch (e) {
-  console.warn('Diagnostics routes not found - skipping');
+  console.warn('Classification routes not found - skipping');
 }
 
 try {
@@ -545,13 +546,14 @@ try {
   console.warn('Push notification routes not found - skipping');
 }
 
+// IMPORTANT: diagnostics is mounted at /api (broad match) with router.use(authenticate).
+// It MUST come after any routes that need unauthenticated access (like classification/debug).
 try {
-  const classificationRoutes = require('./routes/classification.routes');
-  app.use('/api/classification', classificationRoutes.default || classificationRoutes);
-  console.log('✓ Classification routes loaded (AI rodent detection)');
-  logger.info('Classification API routes initialized');
+  const diagnosticsRoutes = require('./routes/diagnostics.routes');
+  app.use('/api', diagnosticsRoutes.default || diagnosticsRoutes);
+  console.log('✓ Diagnostics routes loaded');
 } catch (e) {
-  console.warn('Classification routes not found - skipping');
+  console.warn('Diagnostics routes not found - skipping');
 }
 
 // 404 handler

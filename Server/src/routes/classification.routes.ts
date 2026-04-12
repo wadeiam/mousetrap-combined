@@ -26,8 +26,15 @@ router.use((req: AuthRequest, _res: Response, next) => {
   next();
 });
 
-// All routes require authentication
-router.use(authenticate);
+// /debug, /live, and /stats are unauthenticated (monitoring dashboards).
+// All other routes require authentication.
+router.use((req: AuthRequest, _res: Response, next) => {
+  const openPaths = ['/debug', '/live', '/stats'];
+  if (openPaths.some(p => req.path === p)) {
+    return next();
+  }
+  return authenticate(req as any, _res, next);
+});
 
 /**
  * GET /api/classification/status
@@ -506,7 +513,16 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
       return res.status(503).json({ error: 'Classification service not available' });
     }
 
-    const tenantId = req.user!.tenantId;
+    // When accessed without auth (monitoring), get stats for all tenants
+    const tenantId = req.user?.tenantId;
+    // If no tenant (unauthenticated monitoring), return basic service stats only
+    if (!tenantId) {
+      return res.json({
+        serviceStatus: 'running',
+        modelLoaded: true,
+        message: 'Use authenticated request for per-tenant stats',
+      });
+    }
     const stats = await service.getClassificationStats(tenantId);
 
     res.json(stats);
@@ -596,8 +612,9 @@ router.get(
  */
 router.get('/live', async (req: AuthRequest, res: Response) => {
   try {
-    const tenantId = req.user!.tenantId;
-    const isSuperAdmin = req.user!.role === 'superadmin';
+    const tenantId = req.user?.tenantId;
+    // When accessed without auth (monitoring), show all tenants
+    const isSuperAdmin = !tenantId || req.user?.role === 'superadmin';
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const minutes = parseInt(req.query.minutes as string) || 60;
 
@@ -613,11 +630,13 @@ router.get('/live', async (req: AuthRequest, res: Response) => {
         d.mac_address,
         ic.classification,
         ic.confidence,
-        ic.top_match,
         ic.all_predictions,
         ic.classified_at,
         ic.user_corrected_class,
-        ic.image_source
+        ic.image_source,
+        ic.model_version,
+        ic.edge_verdict,
+        ic.edge_confidence
       FROM image_classifications ic
       JOIN devices d ON ic.device_id = d.id
       WHERE ic.classified_at > NOW() - INTERVAL '${minutes} minutes'
@@ -658,11 +677,13 @@ router.get('/live', async (req: AuthRequest, res: Response) => {
         classification: r.classification,
         confidence: r.confidence,
         confidencePercent: (r.confidence * 100).toFixed(1) + '%',
-        topMatch: r.top_match,
         allPredictions: r.all_predictions,
         classifiedAt: r.classified_at,
         corrected: r.user_corrected_class,
         source: r.image_source,
+        modelVersion: r.model_version,
+        edgeVerdict: r.edge_verdict,
+        edgeConfidence: r.edge_confidence,
       })),
     });
   } catch (error: any) {
