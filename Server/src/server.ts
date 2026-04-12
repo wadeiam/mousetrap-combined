@@ -367,6 +367,14 @@ io.on('connection', (socket) => {
 // Security & Middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "script-src": ["'self'", "'unsafe-inline'"],
+      // Remove upgrade-insecure-requests — server is HTTP-only behind port forward
+      "upgrade-insecure-requests": null,
+    },
+  },
 }));
 
 app.use(cors({

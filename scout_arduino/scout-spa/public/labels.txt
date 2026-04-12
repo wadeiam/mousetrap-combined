@@ -1,0 +1,3 @@
+rodent
+person_or_pet
+other

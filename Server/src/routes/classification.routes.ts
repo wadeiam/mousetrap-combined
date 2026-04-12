@@ -29,7 +29,7 @@ router.use((req: AuthRequest, _res: Response, next) => {
 // /debug, /live, and /stats are unauthenticated (monitoring dashboards).
 // All other routes require authentication.
 router.use((req: AuthRequest, _res: Response, next) => {
-  const openPaths = ['/debug', '/live', '/stats'];
+  const openPaths = ['/debug', '/debug-test', '/live', '/stats'];
   if (openPaths.some(p => req.path === p)) {
     return next();
   }
@@ -693,6 +693,41 @@ router.get('/live', async (req: AuthRequest, res: Response) => {
 });
 
 /**
+ * GET /api/classification/debug-test
+ * Minimal test page to diagnose fetch issues
+ */
+router.get('/debug-test', async (_req: AuthRequest, res: Response) => {
+  res.type('html').send(`<!DOCTYPE html>
+<html><body style="background:#111;color:#eee;font-family:monospace;padding:20px">
+<h2>Debug Test</h2>
+<pre id="out">Fetching...</pre>
+<script>
+(async function() {
+  const el = document.getElementById('out');
+  try {
+    const url = window.location.origin + '/api/classification/live?minutes=60&limit=5';
+    el.textContent = 'Fetching: ' + url + '\\n';
+    const res = await fetch(url);
+    el.textContent += 'Status: ' + res.status + '\\n';
+    const text = await res.text();
+    el.textContent += 'Length: ' + text.length + '\\n';
+    const data = JSON.parse(text);
+    el.textContent += 'Success: ' + data.success + '\\n';
+    el.textContent += 'Count: ' + (data.classifications||[]).length + '\\n';
+    if (data.classifications && data.classifications[0]) {
+      el.textContent += 'First: ' + data.classifications[0].classification + ' ' + data.classifications[0].confidencePercent + '\\n';
+    }
+    if (data.error) {
+      el.textContent += 'Error: ' + data.error + '\\n';
+    }
+  } catch(e) {
+    el.textContent += 'CATCH: ' + e.name + ': ' + e.message + '\\n' + e.stack;
+  }
+})();
+</script></body></html>`);
+});
+
+/**
  * GET /api/classification/debug
  * Simple HTML debug page for viewing classification activity
  */
@@ -835,6 +870,7 @@ router.get('/debug', async (req: AuthRequest, res: Response) => {
         }
       } catch (err) {
         console.error('Refresh failed:', err);
+        document.getElementById('tableBody').innerHTML = '<tr><td colspan="6" style="text-align:center; padding:40px; color:#ff6b6b;">Fetch error: ' + err.message + '</td></tr>';
       }
     }
 
