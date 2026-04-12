@@ -17,6 +17,8 @@
     detectionState: false,
     uptime: '',
     heap: 0,
+    ipAddress: '',
+    rssi: 0,
     anomalies: []
   };
 
@@ -362,6 +364,14 @@
         <div class="status-row">
           <span>Free Heap:</span>
           <span>{status.heap} bytes</span>
+        </div>
+        <div class="status-row">
+          <span>IP Address:</span>
+          <span>{status.ipAddress || 'N/A'}</span>
+        </div>
+        <div class="status-row">
+          <span>WiFi Signal:</span>
+          <span>{status.rssi ? `${status.rssi} dBm` : 'N/A'}</span>
         </div>
         <div class="status-row">
           <span>Claim Status:</span>

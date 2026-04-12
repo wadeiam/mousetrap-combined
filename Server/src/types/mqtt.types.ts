@@ -260,6 +260,19 @@ export interface MotionEventMessage {
   };
   size_percent?: number;   // Size as % of frame
   confidence?: number;     // Detection confidence (0-1)
+
+  // Edge classifier result (present if scout ran on-device CNN inference).
+  // When verdict is 'rodent', 'person_or_pet', or 'other' at high confidence,
+  // the server trusts the edge verdict and skips server-side classification.
+  // 'ambiguous' or missing → server runs MobileNet as a safety net.
+  edge?: {
+    verdict: 'rodent' | 'person_or_pet' | 'other' | 'ambiguous' | 'unknown';
+    confidence: number;
+    rodent_score: number;
+    person_or_pet_score: number;
+    other_score: number;
+    inference_time_ms: number;
+  };
 }
 
 /**

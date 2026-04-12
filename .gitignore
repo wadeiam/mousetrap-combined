@@ -16,6 +16,9 @@ dist/
 # Secrets / keys
 Server/keys/
 
+# Captured image storage (motion-event JPEGs for training)
+Server/image_storage/
+
 # Database backups (keep locally, not in repo)
 backups/
 

@@ -48,6 +48,30 @@
     return Math.round((used / total) * 100);
   }
 
+  function getSignalLabel(rssi) {
+    if (rssi === undefined || rssi === null || rssi === 0) return 'Unknown';
+    if (rssi >= -50) return 'Excellent';
+    if (rssi >= -60) return 'Good';
+    if (rssi >= -70) return 'Fair';
+    return 'Weak';
+  }
+
+  function getSignalBars(rssi) {
+    if (rssi === undefined || rssi === null || rssi === 0) return 0;
+    if (rssi >= -50) return 4;
+    if (rssi >= -60) return 3;
+    if (rssi >= -70) return 2;
+    return 1;
+  }
+
+  function getSignalColor(rssi) {
+    if (rssi === undefined || rssi === null || rssi === 0) return '#666';
+    if (rssi >= -50) return '#4CAF50';
+    if (rssi >= -60) return '#8BC34A';
+    if (rssi >= -70) return '#ff9800';
+    return '#f44336';
+  }
+
   function toggleAutoRefresh() {
     autoRefresh = !autoRefresh;
     if (autoRefresh) {
@@ -109,6 +133,53 @@
           <div class="info-row">
             <span class="label">Filesystem:</span>
             <span class="value">{status.filesystemVersion || 'N/A'}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Network -->
+      <div class="card">
+        <h3>Network</h3>
+        <div class="info-grid">
+          <div class="info-row">
+            <span class="label">IP Address:</span>
+            <span class="value">{status.ipAddress || 'N/A'}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">MAC Address:</span>
+            <span class="value">{status.macAddress || 'N/A'}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">WiFi Status:</span>
+            <span class="value">
+              <span class="status-dot" style="background: {status.wifiConnected ? '#4CAF50' : '#f44336'}"></span>
+              {status.wifiConnected ? 'Connected' : 'Disconnected'}
+            </span>
+          </div>
+          <div class="info-row">
+            <span class="label">WiFi Signal:</span>
+            <span class="value signal-value">
+              <span class="signal-bars" title={getSignalLabel(status.rssi)}>
+                {#each [1, 2, 3, 4] as bar}
+                  <span
+                    class="signal-bar"
+                    class:active={getSignalBars(status.rssi) >= bar}
+                    style="background: {getSignalBars(status.rssi) >= bar ? getSignalColor(status.rssi) : '#333'}; height: {bar * 25}%"
+                  ></span>
+                {/each}
+              </span>
+              <span class="signal-text">
+                {status.rssi !== undefined && status.rssi !== null ? `${status.rssi} dBm` : 'N/A'}
+                ({getSignalLabel(status.rssi)})
+              </span>
+            </span>
+          </div>
+          <div class="info-row">
+            <span class="label">MQTT Broker:</span>
+            <span class="value">
+              <span class="status-dot" style="background: {status.mqttConfigured ? '#4CAF50' : '#f44336'}"></span>
+              {status.mqttBroker || 'Not configured'}
+            </span>
           </div>
         </div>
       </div>
@@ -302,6 +373,41 @@
     color: #ddd;
     font-family: 'Courier New', monospace;
     font-size: 0.9rem;
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+
+  .signal-value {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .signal-bars {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+    width: 22px;
+  }
+
+  .signal-bar {
+    width: 4px;
+    background: #333;
+    border-radius: 1px;
+    transition: background 0.2s;
+  }
+
+  .signal-text {
+    font-size: 0.8rem;
+    white-space: nowrap;
   }
 
   .uptime-display {

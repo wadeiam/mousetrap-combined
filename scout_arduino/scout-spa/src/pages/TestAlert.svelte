@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import Card from '../components/Card.svelte';
   import { testAlert, triggerServo, resetAlarm, getStatus } from '../lib/api.js';
+  import { isScout } from '../lib/stores.js';
 
   let testAlertLoading = false;
   let testServoLoading = false;
@@ -94,12 +95,14 @@
           {testAlertLoading ? '⏳' : (isAlertActive ? '🔄' : '🔔')} {isAlertActive ? 'Reset Alert' : 'Test Alert'}
         </button>
 
-        <button
-          class="btn test-servo-btn"
-          on:click={handleTestServo}
-          disabled={testServoLoading}>
-          {testServoLoading ? '⏳' : '⚙️'} Test Servo
-        </button>
+        {#if $isScout !== true}
+          <button
+            class="btn test-servo-btn"
+            on:click={handleTestServo}
+            disabled={testServoLoading}>
+            {testServoLoading ? '⏳' : '⚙️'} Test Servo
+          </button>
+        {/if}
       </div>
 
       {#if message}

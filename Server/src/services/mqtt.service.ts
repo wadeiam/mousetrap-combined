@@ -29,6 +29,7 @@ import {
   mqttTopics,
 } from '../types/mqtt.types';
 import { classifyImage, ClassificationResponse } from './classification.client';
+import { saveImage, decodeBase64Jpeg } from './image-storage.service';
 
 // Type-safe EventEmitter
 interface TypedEventEmitter {
@@ -988,22 +989,85 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
         return;
       }
 
-      // Call classification service
-      logger.info('Classifying motion event image', {
-        tenantId,
-        macAddress,
-        deviceId,
-        imageSize: imageBase64.length,
-      });
+      // Edge classifier verdict (if scout ran on-device inference)
+      const edge = message.edge;
+      const hasEdgeVerdict = !!edge;
+      const edgeConfident = edge && (edge.verdict === 'rodent' ||
+                                      edge.verdict === 'person_or_pet' ||
+                                      edge.verdict === 'other');
+      // Only skip server classification when the edge is confidently sure.
+      // Ambiguous / unknown / missing → run the server MobileNet as safety net.
+      const skipServerClassification = edgeConfident;
 
-      const classification = await classifyImage(imageBase64);
+      // Generate hash for deduplication
+      const crypto = await import('crypto');
+      const imageHash = crypto.createHash('sha256').update(imageBase64.slice(0, 1000)).digest('hex');
+
+      // Generate classification UUID up front so we can use it for the image filename
+      const uuidResult = await this.db.query('SELECT gen_random_uuid() as id');
+      const classificationId: string = uuidResult.rows[0].id;
+
+      // Persist image bytes to disk ALWAYS (training data + diagnostics)
+      let imagePath: string | null = null;
+      let imageSizeBytes: number | null = null;
+      try {
+        const jpegBytes = decodeBase64Jpeg(imageBase64);
+        imagePath = await saveImage(tenantId, classificationId, jpegBytes);
+        imageSizeBytes = jpegBytes.length;
+      } catch (storageErr) {
+        logger.error('Failed to persist motion-event image', {
+          classificationId,
+          tenantId,
+          macAddress,
+          error: storageErr instanceof Error ? storageErr.message : String(storageErr),
+        });
+      }
+
+      // Run server classification unless the scout already gave us a confident verdict
+      let classification: ClassificationResponse;
+      let modelVersion: string;
+      if (skipServerClassification && edge) {
+        // Trust the edge verdict. Build a synthetic classification response.
+        classification = {
+          classification: edge.verdict === 'rodent' ? 'rodent' :
+                          edge.verdict === 'person_or_pet' ? 'pet' :
+                          'other',
+          confidence: edge.confidence,
+          topMatch: `edge:${edge.verdict}`,
+          predictions: [
+            { className: 'rodent', probability: edge.rodent_score },
+            { className: 'person_or_pet', probability: edge.person_or_pet_score },
+            { className: 'other', probability: edge.other_score },
+          ] as any,
+          processingTimeMs: edge.inference_time_ms,
+        } as ClassificationResponse;
+        modelVersion = 'edge-cnn-v1';
+        logger.info('Trusted edge verdict, skipping server classification', {
+          tenantId,
+          macAddress,
+          edgeVerdict: edge.verdict,
+          edgeConfidence: edge.confidence,
+        });
+      } else {
+        logger.info('Running server classification (edge ambiguous or missing)', {
+          tenantId,
+          macAddress,
+          deviceId,
+          imageSize: imageBase64.length,
+          edgePresent: hasEdgeVerdict,
+          edgeVerdict: edge?.verdict,
+        });
+        classification = await classifyImage(imageBase64);
+        modelVersion = 'mobilenet-docker-v1';
+      }
       const classificationTimeMs = Date.now() - startTime;
 
-      console.log(`[MQTT] Classification result for ${macAddress}: ${classification.classification} (${(classification.confidence * 100).toFixed(1)}%)`);
+      console.log(`[MQTT] Classification for ${macAddress}: ${classification.classification} (${(classification.confidence * 100).toFixed(1)}%) [${modelVersion}]`);
 
       // Store classification result in database
       const insertQuery = `
         INSERT INTO image_classifications (
+          id,
           device_id,
           tenant_id,
           image_hash,
@@ -1012,28 +1076,31 @@ export class MqttService extends EventEmitter implements TypedEventEmitter {
           all_predictions,
           model_version,
           inference_time_ms,
-          image_source
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          image_source,
+          image_path,
+          image_size_bytes,
+          edge_verdict,
+          edge_confidence
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING id, classified_at
       `;
 
-      // Generate hash for deduplication
-      const crypto = await import('crypto');
-      const imageHash = crypto.createHash('sha256').update(imageBase64.slice(0, 1000)).digest('hex');
-
-      const result = await this.db.query(insertQuery, [
+      await this.db.query(insertQuery, [
+        classificationId,
         deviceId,
         tenantId,
         imageHash,
         classification.classification,
         classification.confidence,
         JSON.stringify(classification.predictions),
-        'mobilenet-docker-v1',
+        modelVersion,
         classification.processingTimeMs || classificationTimeMs,
         'motion_event',
+        imagePath,
+        imageSizeBytes,
+        edge?.verdict || null,
+        edge?.confidence ?? null,
       ]);
-
-      const classificationId = result.rows[0].id;
 
       // Update device's last classification
       await this.db.query(

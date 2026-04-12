@@ -1,6 +1,7 @@
 /* MouseTrap SPA - Robust Svelte 4 boot with error handling */
 import './app.css';
 import App from './App.svelte';
+import { initDeviceType } from './lib/stores.js';
 
 const log = (...a) => console.log('[JS]', ...a);
 
@@ -37,6 +38,10 @@ window.addEventListener('unhandledrejection', (e) => log('unhandled-rejection:',
     const app = new App({ target: host });
     window.__MOUSETRAP_APP = { ok: true, mountedAt: Date.now(), app };
     log('app-main: mounted OK');
+
+    // Fire-and-forget: detect device type (scout vs trap) for nav filtering.
+    // Failures are swallowed inside initDeviceType(); belt-and-suspenders catch here too.
+    initDeviceType().catch((e) => log('initDeviceType failed:', e));
   } catch (err) {
     window.__MOUSETRAP_APP = { ok: false, error: err, when: Date.now() };
     showFatal(err);

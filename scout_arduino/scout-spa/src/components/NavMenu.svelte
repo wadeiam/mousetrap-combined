@@ -1,5 +1,5 @@
 <script>
-  import { menuOpen } from '../lib/stores.js';
+  import { menuOpen, isScout } from '../lib/stores.js';
   import { link, currentRoute } from '../lib/router.js';
 
   let cameraExpanded = false;
@@ -66,17 +66,19 @@
     </div>
   {/if}
 
-  <!-- Device -->
-  <a href="#" on:click|preventDefault={() => toggleSubmenu('device')} class="parent">
-    Device
-    <span class="arrow" class:expanded={deviceExpanded}>▸</span>
-  </a>
-  {#if deviceExpanded}
-    <div class="submenu">
-      <a href="#/calibration" use:link on:click={closeMenu} class:active={$currentRoute === '/calibration'}>
-        Sensor Calibration
-      </a>
-    </div>
+  <!-- Device (hidden on scout - only child is Sensor Calibration which is trap-only) -->
+  {#if $isScout !== true}
+    <a href="#" on:click|preventDefault={() => toggleSubmenu('device')} class="parent">
+      Device
+      <span class="arrow" class:expanded={deviceExpanded}>▸</span>
+    </a>
+    {#if deviceExpanded}
+      <div class="submenu">
+        <a href="#/calibration" use:link on:click={closeMenu} class:active={$currentRoute === '/calibration'}>
+          Sensor Calibration
+        </a>
+      </div>
+    {/if}
   {/if}
 
   <!-- System -->

@@ -1,17 +1,26 @@
 // API client for MouseTrap device endpoints
 // Handles all HTTP communication with the ESP32
 
-// In captive portal mode, window.location.origin might be captive.apple.com or similar
-// We need to detect this and use the device's actual IP instead
+// Use the current origin by default — works on LAN (10.x, 192.168.x), localhost,
+// mDNS (mousetrap.local), and AP mode (192.168.4.1). Only fall back to the AP IP
+// when the origin is a known captive-portal redirect hostname (e.g. captive.apple.com,
+// connectivitycheck.gstatic.com) that isn't the device itself.
 function getBaseUrl() {
   const origin = window.location.origin;
-  // Check if we're on a captive portal redirect (not a local IP)
-  if (origin.includes('192.168.') || origin.includes('localhost') || origin.includes('mousetrap.local')) {
-    return origin;
+  const captivePortalHosts = [
+    'captive.apple.com',
+    'connectivitycheck.gstatic.com',
+    'connectivitycheck.android.com',
+    'www.msftconnecttest.com',
+    'www.msftncsi.com',
+    'detectportal.firefox.com',
+  ];
+  const isCaptivePortal = captivePortalHosts.some(h => origin.includes(h));
+  if (isCaptivePortal) {
+    console.log('[API] Captive portal detected, using 192.168.4.1 instead of:', origin);
+    return 'http://192.168.4.1';
   }
-  // In captive portal mode, fall back to the device's AP IP
-  console.log('[API] Captive portal detected, using 192.168.4.1 instead of:', origin);
-  return 'http://192.168.4.1';
+  return origin;
 }
 
 const BASE_URL = getBaseUrl();
@@ -78,6 +87,8 @@ export async function getStatus() {
       detectionState: data.triggered || false,
       uptime: sysStatus?.uptime || '',
       heap: sysStatus?.heapFree || 0,
+      ipAddress: sysStatus?.ipAddress || '',
+      rssi: sysStatus?.rssi ?? 0,
       anomalies: data.anomalies || [],
       calibrationOffset: data.calibrationOffset || 0,
       falseAlarmOffset: data.falseAlarmOffset || 0,
@@ -92,6 +103,8 @@ export async function getStatus() {
       detectionState: data.triggered || false,
       uptime: '',
       heap: 0,
+      ipAddress: '',
+      rssi: 0,
       anomalies: data.anomalies || [],
       calibrationOffset: data.calibrationOffset || 0,
       falseAlarmOffset: data.falseAlarmOffset || 0,

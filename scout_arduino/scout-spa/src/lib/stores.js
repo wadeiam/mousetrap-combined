@@ -1,6 +1,7 @@
 // Global Svelte stores for shared state
 
 import { writable, derived } from 'svelte/store';
+import * as api from './api.js';
 
 // ============================================================================
 // Device Status (polled from /status endpoint)
@@ -75,3 +76,32 @@ export const statusColor = derived(
     return 'green';
   }
 );
+
+// ============================================================================
+// Device Type (scout vs trap)
+// ============================================================================
+
+// Writable store holding the device type reported by the firmware.
+// null = unknown (default to trap-compatible behavior so nothing breaks).
+export const deviceType = writable(null);
+
+// Convenience derived stores for template conditions.
+export const isScout = derived(deviceType, ($t) => $t === 'scout');
+export const isTrap = derived(deviceType, ($t) => $t === 'trap');
+
+/**
+ * Fetch device type from /api/device/claim-status and populate the store.
+ * Errors are swallowed: if the device can't respond, deviceType remains null
+ * and the UI falls back to showing everything (trap-compatible default).
+ */
+export async function initDeviceType() {
+  try {
+    const response = await api.getClaimStatus();
+    const type = (response && response.deviceType) || null;
+    deviceType.set(type);
+    return type;
+  } catch (err) {
+    // Silently ignore - leave deviceType as null
+    return null;
+  }
+}

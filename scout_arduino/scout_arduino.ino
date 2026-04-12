@@ -35,6 +35,7 @@
 
 #include "camera_pins.h"
 #include "motion_detect.h"
+#include "edge_classifier.h"
 
 // =============================================================================
 // Version and Configuration
@@ -1665,7 +1666,8 @@ void publishSnapshot(camera_fb_t* frame) {
 // Motion Events
 // =============================================================================
 
-void publishMotionEvent(camera_fb_t* frame, MotionResult& result) {
+void publishMotionEvent(camera_fb_t* frame, MotionResult& result,
+                         const EdgeClassificationResult& edge) {
   if (!mqttClient.connected()) {
     Serial.println("[Motion] MQTT not connected, skipping publish");
     return;
@@ -1696,6 +1698,17 @@ void publishMotionEvent(camera_fb_t* frame, MotionResult& result) {
   motion["percent"] = result.sizePercent;
 
   doc["confidence"] = result.confidence;
+
+  // Edge classifier verdict (if the model is loaded and ran)
+  if (edge.inference_ran) {
+    JsonObject edgeObj = doc["edge"].to<JsonObject>();
+    edgeObj["verdict"] = edgeVerdictString(edge.verdict);
+    edgeObj["confidence"] = edge.confidence;
+    edgeObj["rodent_score"] = edge.rodent_score;
+    edgeObj["person_or_pet_score"] = edge.person_or_pet_score;
+    edgeObj["other_score"] = edge.other_score;
+    edgeObj["inference_time_ms"] = edge.inference_time_ms;
+  }
 
   String payload;
   serializeJson(doc, payload);
@@ -1734,27 +1747,41 @@ void checkMotion() {
   if (result.detected && !result.sizeFiltered && !result.aspectFiltered) {
     consecutiveDetections++;
 
+    bool shouldTrigger = false;
     // HIGH confidence (large motion area) = immediate trigger
-    // Catches fast-moving mice that create motion blur across the frame
     if (result.confidence > 0.7f || result.sizePercent > 10.0f) {
-      Serial.printf("[Motion] HIGH confidence trigger: conf=%.2f, size=%.1f%%\n",
+      Serial.printf("[Motion] HIGH motion confidence: conf=%.2f, size=%.1f%%\n",
                     result.confidence, result.sizePercent);
-      publishMotionEvent(fb, result);
+      shouldTrigger = true;
+    } else if (consecutiveDetections >= 3) {
+      Serial.printf("[Motion] Multi-frame validated: %d consecutive\n",
+                    consecutiveDetections);
+      shouldTrigger = true;
+    } else {
+      Serial.printf("[Motion] Pending validation: %d/3 consecutive\n",
+                    consecutiveDetections);
+    }
+
+    if (shouldTrigger) {
+      // Run edge classifier on the frame (no-op if model not loaded)
+      EdgeClassificationResult edge = edgeClassify(
+          fb, result.x, result.y, result.width, result.height);
+
+      // Filter based on edge verdict:
+      //   RODENT / AMBIGUOUS / UNKNOWN  → publish (server will handle)
+      //   PERSON_OR_PET / OTHER         → drop, don't even publish
+      bool shouldPublish = (edge.verdict != EDGE_VERDICT_PERSON_OR_PET &&
+                            edge.verdict != EDGE_VERDICT_OTHER);
+
+      if (shouldPublish) {
+        publishMotionEvent(fb, result, edge);
+      } else {
+        Serial.printf("[Motion] Edge filter dropped (%s, conf=%.2f)\n",
+                      edgeVerdictString(edge.verdict), edge.confidence);
+      }
       consecutiveDetections = 0;
       esp_camera_fb_return(fb);
       return;
-    }
-
-    // MEDIUM confidence = require 3 consecutive frames (600ms at 200ms interval)
-    // Filters transient noise while catching real sustained movement
-    if (consecutiveDetections >= 3) {
-      Serial.printf("[Motion] Multi-frame validated: %d consecutive detections\n",
-                    consecutiveDetections);
-      publishMotionEvent(fb, result);
-      consecutiveDetections = 0;
-    } else {
-      Serial.printf("[Motion] Pending validation: %d/2 consecutive detections\n",
-                    consecutiveDetections);
     }
   } else {
     // Reset counter on no detection or filtered detection
@@ -3283,6 +3310,9 @@ void setup() {
     // Rotate logs on boot (keep 2 generations of previous logs)
     rotateLogs();
   }
+
+  // Initialize edge classifier (loads /model.tflite from LittleFS if present)
+  edgeClassifierInit();
 
   // Load configuration
   loadWiFiCredentials();
