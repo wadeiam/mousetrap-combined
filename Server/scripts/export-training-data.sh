@@ -36,6 +36,7 @@ DB_PORT="${DB_PORT:-5432}"
 # Parse args
 MIN_CONFIDENCE="0.5"
 CORRECTED_ONLY=0
+LABELED_ONLY=0
 OUTPUT=""
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +47,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --corrected-only)
       CORRECTED_ONLY=1
+      shift
+      ;;
+    --labeled-only)
+      # Active-learning mode: only rows with an effective training label
+      # (human correction OR auto_label); that label is used as the class.
+      LABELED_ONLY=1
       shift
       ;;
     -h|--help)
@@ -63,10 +70,21 @@ OUTPUT="${OUTPUT:-training-data-$(date +%Y%m%d-%H%M%S).tar.gz}"
 
 # Build SQL filter
 WHERE_CLAUSE="image_path IS NOT NULL"
-if [ "$CORRECTED_ONLY" = "1" ]; then
+if [ "$LABELED_ONLY" = "1" ]; then
+  WHERE_CLAUSE="$WHERE_CLAUSE AND (user_corrected_class IS NOT NULL OR auto_label IS NOT NULL)"
+elif [ "$CORRECTED_ONLY" = "1" ]; then
   WHERE_CLAUSE="$WHERE_CLAUSE AND user_corrected_class IS NOT NULL"
 else
   WHERE_CLAUSE="$WHERE_CLAUSE AND confidence >= $MIN_CONFIDENCE"
+fi
+
+# Effective class column: corrected > auto_label > model classification.
+# In --labeled-only mode auto_label flows into the corrected_class CSV column so
+# the existing grouping logic uses it as the label.
+if [ "$LABELED_ONLY" = "1" ]; then
+  CORRECTED_EXPR="COALESCE(user_corrected_class, auto_label, '')"
+else
+  CORRECTED_EXPR="COALESCE(user_corrected_class, '')"
 fi
 
 # Staging dir
@@ -83,7 +101,7 @@ LABELS_FILE="$STAGING/labels.csv"
 echo "id,classification,confidence,corrected_class,device_id,classified_at,image_relpath" > "$LABELS_FILE"
 
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -A -F',' -t \
-  -c "SELECT id, classification, confidence, COALESCE(user_corrected_class, ''), device_id, classified_at, image_path
+  -c "SELECT id, classification, confidence, $CORRECTED_EXPR, device_id, classified_at, image_path
       FROM image_classifications
       WHERE $WHERE_CLAUSE
       ORDER BY classified_at DESC" >> "$LABELS_FILE"

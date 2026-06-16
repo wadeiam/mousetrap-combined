@@ -19,6 +19,12 @@ Server/keys/
 # Captured image storage (motion-event JPEGs for training)
 Server/image_storage/
 
+# ML model weights (too large for git)
+classification-service/weights/*.pt
+classification-service/weights/*.onnx
+*.pt
+!.gitkeep
+
 # Database backups (keep locally, not in repo)
 backups/
 
@@ -54,3 +60,13 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+# Rodent detection — large/regenerable binaries (live in gs://mousetrapv1-rodent-training)
+grove-vision-ai/models/*.pt
+grove-vision-ai/models/*_temp_*.bin
+grove-vision-ai/firmware/*.img
+grove-vision-ai/firmware/*.tflite
+ml-training/__pycache__/
+
+__pycache__/
+*.pyc
