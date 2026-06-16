@@ -14,6 +14,7 @@ import { initEscalationService, getEscalationService } from './services/escalati
 import { initSmsService } from './services/sms.service';
 import { initEmailService } from './services/email.service';
 import { initClassificationService, getClassificationService } from './services/classification.service';
+import { initActiveLearningService } from './services/active-learning.service';
 import { initOfflineEscalationService, getOfflineEscalationService } from './services/offline-escalation.service';
 import { initHealthcheckService, getHealthcheckService } from './services/healthcheck.service';
 
@@ -75,6 +76,10 @@ if (emailService.isEnabled()) {
 // Initialize Classification service (AI-powered rodent detection)
 const classificationService = initClassificationService(dbPool);
 console.log('✓ Classification service initialized (lazy model loading)');
+
+// Initialize Active-Learning service (auto-labeling / reinforce loop)
+initActiveLearningService(dbPool);
+console.log('✓ Active-learning service initialized');
 
 // Initialize Offline Escalation service (critical for animal welfare)
 const offlineEscalationService = initOfflineEscalationService(dbPool);
@@ -157,6 +162,24 @@ mqttService.on('error', (err: Error) => {
   }
 });
 
+// Look up a device by MAC, falling back to cross-tenant if the strict tenant
+// lookup misses. Devices store their tenant ID in NVS at claim time, so if a
+// device is moved between tenants in the DB the topic-derived tenantId stops
+// matching — fall back to mqtt_client_id alone so we still find the row.
+async function findDeviceByMac(tenantId: string, macAddress: string): Promise<{ id: string; name: string; tenant_id: string } | null> {
+  const strict = await dbPool.query<{ id: string; name: string; tenant_id: string }>(
+    'SELECT id, name, tenant_id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
+    [tenantId, macAddress]
+  );
+  if (strict.rows.length > 0) return strict.rows[0];
+
+  const fallback = await dbPool.query<{ id: string; name: string; tenant_id: string }>(
+    'SELECT id, name, tenant_id FROM devices WHERE mqtt_client_id = $1 LIMIT 1',
+    [macAddress]
+  );
+  return fallback.rows[0] || null;
+}
+
 // Forward MQTT events to WebSocket clients
 mqttService.on('device:alert', (data: any) => {
   console.log('[WS] Forwarding device alert:', data);
@@ -181,48 +204,25 @@ mqttService.on('device:online', async ({ tenantId, macAddress }) => {
     timestamp: Date.now(),
   });
 
-  // Stop offline escalation tracking when device comes back online
-  const escalation = getOfflineEscalationService();
-  if (escalation) {
-    try {
-      const deviceResult = await dbPool.query(
-        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
-        [tenantId, macAddress]
-      );
-      if (deviceResult.rows.length > 0) {
-        const device = deviceResult.rows[0];
-        escalation.deviceOnline(tenantId, device.id);
+  try {
+    const device = await findDeviceByMac(tenantId, macAddress);
+    if (device) {
+      const escalation = getOfflineEscalationService();
+      if (escalation) {
+        escalation.deviceOnline(device.tenant_id, device.id);
         console.log(`[OFFLINE-ESCALATION] Device back online: ${device.name}`);
-
-        // Log connectivity event
-        try {
-          await dbPool.query(
-            'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
-            [device.id, tenantId, 'online']
-          );
-        } catch (logErr) {
-          console.error('[CONNECTIVITY-LOG] Error logging online event:', logErr);
-        }
       }
-    } catch (error) {
-      console.error('[OFFLINE-ESCALATION] Error stopping tracking:', error);
-    }
-  } else {
-    // No escalation service, but still log connectivity
-    try {
-      const deviceResult = await dbPool.query(
-        'SELECT id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
-        [tenantId, macAddress]
-      );
-      if (deviceResult.rows.length > 0) {
+      try {
         await dbPool.query(
           'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
-          [deviceResult.rows[0].id, tenantId, 'online']
+          [device.id, device.tenant_id, 'online']
         );
+      } catch (logErr) {
+        console.error('[CONNECTIVITY-LOG] Error logging online event:', logErr);
       }
-    } catch (logErr) {
-      console.error('[CONNECTIVITY-LOG] Error logging online event:', logErr);
     }
+  } catch (error) {
+    console.error('[OFFLINE-ESCALATION] Error handling online event:', error);
   }
 });
 
@@ -232,50 +232,25 @@ mqttService.on('device:offline', async ({ tenantId, macAddress }) => {
     timestamp: Date.now(),
   });
 
-  // Start offline escalation tracking (immediate push, then SMS at 15/30/60 min)
-  // This is critical for animal welfare - trapped mice must not be left unattended
-  const escalation = getOfflineEscalationService();
-  if (escalation) {
-    try {
-      // Get device info from database
-      const deviceResult = await dbPool.query(
-        'SELECT id, name FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
-        [tenantId, macAddress]
-      );
-      if (deviceResult.rows.length > 0) {
-        const device = deviceResult.rows[0];
-        await escalation.deviceOffline(tenantId, device.id, device.name);
+  try {
+    const device = await findDeviceByMac(tenantId, macAddress);
+    if (device) {
+      const escalation = getOfflineEscalationService();
+      if (escalation) {
+        await escalation.deviceOffline(device.tenant_id, device.id, device.name);
         console.log(`[OFFLINE-ESCALATION] Started tracking: ${device.name}`);
-
-        // Log connectivity event
-        try {
-          await dbPool.query(
-            'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
-            [device.id, tenantId, 'offline']
-          );
-        } catch (logErr) {
-          console.error('[CONNECTIVITY-LOG] Error logging offline event:', logErr);
-        }
       }
-    } catch (error) {
-      console.error('[OFFLINE-ESCALATION] Error starting tracking:', error);
-    }
-  } else {
-    // No escalation service, but still log connectivity
-    try {
-      const deviceResult = await dbPool.query(
-        'SELECT id FROM devices WHERE tenant_id = $1 AND mqtt_client_id = $2',
-        [tenantId, macAddress]
-      );
-      if (deviceResult.rows.length > 0) {
+      try {
         await dbPool.query(
           'INSERT INTO device_connectivity_log (device_id, tenant_id, event) VALUES ($1, $2, $3)',
-          [deviceResult.rows[0].id, tenantId, 'offline']
+          [device.id, device.tenant_id, 'offline']
         );
+      } catch (logErr) {
+        console.error('[CONNECTIVITY-LOG] Error logging offline event:', logErr);
       }
-    } catch (logErr) {
-      console.error('[CONNECTIVITY-LOG] Error logging offline event:', logErr);
     }
+  } catch (error) {
+    console.error('[OFFLINE-ESCALATION] Error handling offline event:', error);
   }
 });
 
@@ -413,8 +388,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Health check endpoint
-app.get('/health', async (_req: Request, res: Response) => {
+// Health check endpoint (also exposed at /api/health for clients that prefix everything)
+const healthHandler = async (_req: Request, res: Response): Promise<void> => {
   const mqttStatus = mqttService.getStatus();
   const mqttConnected = mqttStatus.connected;
 
@@ -438,11 +413,17 @@ app.get('/health', async (_req: Request, res: Response) => {
       error: error instanceof Error ? error.message : 'Unknown error',
     });
   }
-});
+};
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // Static file serving for firmware downloads
 const firmwareStoragePath = process.env.FIRMWARE_STORAGE_PATH || path.join(__dirname, '../firmware');
 app.use('/api/firmware-files', express.static(firmwareStoragePath));
+
+// Serve stored classification images (for debug dashboard review UI)
+const imageStoragePath = process.env.IMAGE_STORAGE_ROOT || path.join(__dirname, '../image_storage');
+app.use('/api/classification-images', express.static(imageStoragePath));
 console.log(`✓ Firmware file serving enabled at /api/firmware-files (${firmwareStoragePath})`);
 
 // API Routes - Import synchronously
@@ -541,6 +522,11 @@ try {
   app.use('/api/classification', classificationRoutes.default || classificationRoutes);
   console.log('✓ Classification routes loaded (AI rodent detection)');
   logger.info('Classification API routes initialized');
+
+  const activeLearningRoutes = require('./routes/active-learning.routes');
+  app.use('/api/active-learning', activeLearningRoutes.default || activeLearningRoutes);
+  console.log('✓ Active-learning routes loaded');
+  logger.info('Active-learning API routes initialized');
 } catch (e) {
   console.warn('Classification routes not found - skipping');
 }
