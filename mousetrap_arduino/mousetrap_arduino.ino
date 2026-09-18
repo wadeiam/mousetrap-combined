@@ -90,7 +90,7 @@ constexpr int CAPTURE_DIR_LEN = sizeof(CAPTURE_DIR) - 1;
 #include <time.h>
 #include <Preferences.h>
 #include <functional>
-#define CAMERA_MODEL_XIAO_ESP32S3
+#define CAMERA_MODEL_ESP32S3_EYE  // Traps are ESP32-S3-CAM (same cam pinout as S3-EYE). Was wrongly set to XIAO in the Apr-4 migration (7e4ea90), which broke the camera. Pins match the pre-migration working config (2df981f).
 #include "camera_pins.h"
 #include "esp_camera.h"
 #include <stdlib.h>
@@ -120,6 +120,8 @@ constexpr int CAPTURE_DIR_LEN = sizeof(CAPTURE_DIR) - 1;
 
 //MQTT for fleet management and OTA updates
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>  // TLS transport for MQTT (port 8883)
+#include "mqtt_ca.h"           // MouseTrap CA — pins the broker cert
 #include <Update.h>
 #include <Preferences.h>
 
@@ -158,7 +160,7 @@ struct ClaimCredentials {
 #define MQTT_BROKER  "mtmon.wadehargrove.com"
 #endif
 #ifndef MQTT_PORT
-#define MQTT_PORT    1883  // Use 8883 for TLS
+#define MQTT_PORT    8883  // TLS (plaintext 1883 is LAN-only / not internet-exposed)
 #endif
 
 // Legacy credentials (unused after device is claimed)
@@ -362,11 +364,18 @@ static void wsSendChunkBase64(const char* id, const uint8_t* data, size_t n);
 static void wsSendEnd(const char* id);
 
 // === MQTT Globals ===
-// Lazy initialization to avoid global constructor TCP crash
-WiFiClient& getMqttWifiClient() {
-  static WiFiClient* client = nullptr;
-  if (!client) client = new WiFiClient();
+// Lazy initialization to avoid global constructor TCP crash.
+// TLS: the underlying socket is a WiFiClientSecure. getMqttWifiClient() still
+// returns a WiFiClient& (safe upcast) so existing call sites are unchanged;
+// getMqttSecureClient() exposes the derived object for setCACert().
+WiFiClientSecure& getMqttSecureClient() {
+  static WiFiClientSecure* client = nullptr;
+  if (!client) client = new WiFiClientSecure();
   return *client;
+}
+
+WiFiClient& getMqttWifiClient() {
+  return getMqttSecureClient();  // upcast to base
 }
 
 PubSubClient& getMqttClient() {
@@ -1485,7 +1494,7 @@ bool claimDevice(const String& claimCode) {
   JsonDocument doc;
   doc["claimCode"] = claimCode;
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
+  deviceInfo["hardwareVersion"] = "ESP32-S3-CAM";
   deviceInfo["macAddress"] = g_macUpper;
   deviceInfo["firmwareVersion"] = currentFirmwareVersion;
   deviceInfo["filesystemVersion"] = currentFilesystemVersion;
@@ -1978,7 +1987,7 @@ bool registerAndClaimDevice(const String& email, const String& password, const S
 
   // Add device info
   JsonObject deviceInfo = doc["deviceInfo"].to<JsonObject>();
-  deviceInfo["hardwareVersion"] = "XIAO-ESP32S3-Sense";
+  deviceInfo["hardwareVersion"] = "ESP32-S3-CAM";
   deviceInfo["firmwareVersion"] = currentFirmwareVersion;
   deviceInfo["filesystemVersion"] = currentFilesystemVersion;
 
@@ -3150,6 +3159,10 @@ void mqttSetup() {
 
   Serial.printf("[MQTT] Broker URL cleaned: '%s' -> '%s'\n",
                 claimedMqttBroker.c_str(), mqttBrokerDomain);
+
+  // TLS: trust the broker only if its cert chains to the MouseTrap CA.
+  // (Requires the device clock to be NTP-synced before connecting.)
+  getMqttSecureClient().setCACert(MQTT_CA_CERT);
 
   mqttClient.setServer(mqttBrokerDomain, MQTT_PORT);
   mqttClient.setCallback(mqttCallback);
